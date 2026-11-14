@@ -30,6 +30,8 @@ try { comments = JSON.parse(fs.readFileSync(DB_FILE, "utf8")); } catch {}
 for (const c of comments) if (c.status === "running" || c.status === "queued") c.status = "error";
 const MAX_CHILDREN = 8;
 const isConv = (c) => c.kind === "conversation";
+// Lecture seule : conversations, et commentaires posés sur un site qui n'est pas un projet local.
+const readOnly = (c) => isConv(c) || !!c.readOnly;
 let saveTimer = null;
 const persist = () => {
   clearTimeout(saveTimer);
@@ -46,7 +48,7 @@ function enqueue(c, prompt) {
   c.status = "queued";
   persist();
   // Les conversations ne modifient rien : leur propre file, en parallèle des modifications.
-  const key = isConv(c) ? c.cwd + "#conversation" : c.cwd;
+  const key = readOnly(c) ? c.cwd + "#conversation" : c.cwd;
   const next = (queues.get(key) || Promise.resolve()).then(() => run(c, prompt));
   queues.set(key, next.catch(() => {}));
 }
@@ -57,7 +59,7 @@ function run(c, prompt) {
   persist();
   const args = ["-p", "--output-format", "stream-json", "--verbose", "--add-dir", IMG_DIR];
   // Conversation : lecture seule (ce sont les commentaires enfants qui modifient le code).
-  if (isConv(c)) args.push("--permission-mode", "default", "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,Bash");
+  if (readOnly(c)) args.push("--permission-mode", "default", "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,Bash");
   else args.push("--permission-mode", c.mode);
   if (c.sessionId) args.push("--resume", c.sessionId);
   console.log(`[${isConv(c) ? "conversation" : "#" + c.n}] ${c.mode} @ ${c.cwd} — ${c.text.slice(0, 60)}`);
@@ -132,8 +134,11 @@ function run(c, prompt) {
 }
 
 function buildPrompt(b, imagePath) {
-  return `Commentaire laissé dans Chrome sur un élément de la page ${b.url} (« ${b.title || ""} »).
-Le code source de cette page se trouve dans le dossier courant. Trouve le code qui produit cet élément et applique la demande, en ne modifiant que le nécessaire. Termine par une ou deux phrases qui résument ce que tu as changé (et dans quel fichier).
+  const task = b.readOnly
+    ? `Ce site n'est pas un projet local : tu ne modifies aucun fichier. Réponds en français à la demande en t'appuyant sur l'élément ci-dessous (et sur le dossier courant s'il est utile), brièvement.`
+    : `Le code source de cette page se trouve dans le dossier courant. Trouve le code qui produit cet élément et applique la demande, en ne modifiant que le nécessaire. Termine par une ou deux phrases qui résument ce que tu as changé (et dans quel fichier).`;
+  return `Commentaire laissé dans le navigateur sur un élément de la page ${b.url} (« ${b.title || ""} »).
+${task}
 
 Demande : ${b.text}
 
@@ -308,8 +313,8 @@ async function readBody(req) {
   }
   return data ? JSON.parse(data) : {};
 }
-const publicView = ({ id, n, kind, parentId, url, title, selector, label, text, status, stats, messages, cwd, createdAt, finishedAt }) =>
-  ({ id, n, kind: kind || "comment", parentId, url, title, selector, label, text, status, stats, messages, cwd, createdAt, finishedAt });
+const publicView = ({ id, n, kind, parentId, url, title, selector, label, text, status, stats, messages, cwd, readOnly, createdAt, finishedAt }) =>
+  ({ id, n, kind: kind || "comment", parentId, url, title, selector, label, text, status, stats, messages, cwd, readOnly: !!readOnly, createdAt, finishedAt });
 
 function launch(list, details, extra, mode) {
   for (const c of list) {
@@ -343,7 +348,7 @@ const routes = {
     const c = {
       id: randomUUID(), n: nextN(url), kind: "comment",
       url, cwd, selector: String(b.selector || ""), label: String(b.label || ""), text,
-      mode: MODES.has(b.mode) ? b.mode : "acceptEdits", status: "queued", sessionId: null,
+      mode: MODES.has(b.mode) ? b.mode : "acceptEdits", readOnly: !!b.readOnly, status: "queued", sessionId: null,
       messages: [], createdAt: Date.now(),
     };
     let imagePath = null;
