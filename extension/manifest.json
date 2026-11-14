@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Code Bridge",
+  "version": "0.5.0",
+  "description": "⌘+clic sur un élément pour le commenter : chaque commentaire lance une session Claude Code locale.",
+  "permissions": ["storage", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["<all_urls>"], "js": ["comment.js"], "run_at": "document_idle" }],
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "Claude Code Bridge" }
+}
