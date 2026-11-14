@@ -116,7 +116,9 @@ function createChromeHost({ storeFile, backgroundFile, bridgeUrl, openInBrowser 
     return tabs[op](...args);
   });
 
-  return { storageGet, storageSet, storageRemove };
+  // dispatch(msg, sender) : même entrée que chrome.runtime.sendMessage vers background.js
+  // (list, create, reply, resolve, launch…), pour tout autre transport (ex. injector/).
+  return { storageGet, storageSet, storageRemove, dispatch };
 }
 
 module.exports = { createChromeHost };
