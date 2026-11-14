@@ -22,11 +22,14 @@ const STATUS_ICON = {
   done: SVG('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>', "st done"),
   error: SVG('<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>', "st error"),
   proposed: SVG('<circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/>', "st proposed"),
+  stopped: SVG('<circle cx="12" cy="12" r="10"/><rect x="9" y="9" width="6" height="6" rx="1"/>', "st stopped"),
 };
-const STATUS_LABEL = { queued: "en attente", running: "en cours", done: "terminé", error: "erreur", proposed: "proposé" };
+const STATUS_LABEL = { queued: "en attente", running: "en cours", done: "terminé", error: "erreur", proposed: "proposé", stopped: "arrêté" };
+const REOPEN = SVG('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>');
 
 let comments = [], seen = {}, collapsed = {}, current = null, activeId = null, lastHtml = "";
 let convId = null, convFull = null, lastConvHtml = ""; // conversation ouverte dans le panneau
+let histOpen = false, histItems = [], histTotal = 0, histSeq = 0, histTimer = 0; // vue Historique
 
 // ---------- réglages ----------
 $("toggleSettings").onclick = () => {
@@ -168,10 +171,12 @@ function render() {
     html += group("p:" + cwd, { text: name, tip: cwd }, inner);
   }
 
-  $("empty").hidden = comments.length > 0 || !$("error").hidden || !!convId;
+  $("empty").hidden = comments.length > 0 || !$("error").hidden || !!convId || histOpen;
   if (html !== lastHtml) { $("tree").innerHTML = html; lastHtml = html; }
-  $("tree").hidden = !!convId;
-  $("convView").hidden = !convId;
+  $("tree").hidden = !!convId || histOpen;
+  $("convView").hidden = !convId || histOpen;
+  $("histView").hidden = !histOpen;
+  $("composer").hidden = histOpen;
   renderConv();
   updateComposer();
 }
@@ -302,7 +307,7 @@ async function treeClick(e) {
   if (open) openComment(comments.find((c) => c.id === open.dataset.open));
 }
 
-// Résoudre = supprimer le commentaire (et arrêter sa session) : retrait immédiat, comme dans la page.
+// Résoudre = archiver le commentaire (et arrêter sa session) : retrait immédiat, comme dans la page.
 async function resolveComment(id) {
   comments = comments.filter((c) => c.id !== id && c.parentId !== id);
   if (activeId === id) activeId = null;
@@ -314,7 +319,7 @@ async function resolveComment(id) {
 }
 
 // Ouvre le fil dans la page : onglet déjà ouvert sur cette page, sinon l'onglet actif y navigue.
-async function openComment(c) {
+async function openComment(c, reopened) {
   if (!c) return;
   activeId = c.id;
   seen[c.id] = Date.now();
@@ -322,6 +327,8 @@ async function openComment(c) {
   render();
   const tabs = await chrome.tabs.query({});
   const tab = tabs.find((t) => pageKey(t.url) === c.url);
+  // Rouvert depuis l'historique : la page ne le connaît pas encore, elle l'ouvrira à son prochain relevé.
+  if (reopened) await chrome.storage.local.set({ pendingOpen: { id: c.id, url: c.url } });
   if (tab) {
     await chrome.tabs.update(tab.id, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
@@ -330,6 +337,129 @@ async function openComment(c) {
     await chrome.storage.local.set({ pendingOpen: { id: c.id, url: c.url } });
     chrome.tabs.update(current.id, { url: c.url });
   }
+}
+
+// ---------- historique : éléments résolus, rangés par projet › page › jour ----------
+const PAGE_SIZE = 50;
+
+$("toggleHistory").onclick = () => (histOpen ? closeHistory() : openHistory());
+$("histBack").onclick = () => closeHistory();
+$("histQ").addEventListener("input", () => { clearTimeout(histTimer); histTimer = setTimeout(() => loadHistory(), 200); });
+$("histQ").addEventListener("keydown", (e) => { if (e.key === "Escape") closeHistory(); });
+$("histBody").addEventListener("click", histClick);
+
+function openHistory() {
+  histOpen = true;
+  $("toggleHistory").setAttribute("aria-expanded", "true");
+  render();
+  loadHistory();
+  $("histQ").focus();
+}
+function closeHistory() {
+  histOpen = false;
+  $("toggleHistory").setAttribute("aria-expanded", "false");
+  render();
+}
+async function loadHistory(more) {
+  const seq = ++histSeq;
+  const res = await chrome.runtime.sendMessage({ type: "history", q: $("histQ").value.trim(), offset: more ? histItems.length : 0, limit: PAGE_SIZE })
+    .catch((e) => ({ error: e.message }));
+  if (seq !== histSeq) return; // réponse d'une recherche dépassée
+  showError(res?.error);
+  if (res?.error) return;
+  histItems = more ? histItems.concat(res.data.items) : res.data.items;
+  histTotal = res.data.total;
+  renderHistory();
+}
+
+const dayLabel = (t) => {
+  const d = new Date(t), today = new Date();
+  const days = Math.round((new Date(today.toDateString()) - new Date(d.toDateString())) / 864e5);
+  if (days === 0) return "Aujourd'hui";
+  if (days === 1) return "Hier";
+  return d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short", ...(d.getFullYear() !== today.getFullYear() && { year: "numeric" }) });
+};
+const timeLabel = (t) => new Date(t).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+
+function histRow(c) {
+  // stats = « $0.012 · 34 s » : durée puis coût.
+  const stats = String(c.stats || "").split(" · ").filter(Boolean);
+  const cost = stats.find((x) => x.startsWith("$")), dur = stats.find((x) => !x.startsWith("$"));
+  const meta = [timeLabel(c.resolvedAt), dur, cost, c.children && `${c.children} commentaire${c.children > 1 ? "s" : ""}`].filter(Boolean).join(" · ");
+  const icon = isConv(c) ? CHAT : STATUS_ICON[c.status] || STATUS_ICON.done;
+  return `<div class="hist">
+    <div class="hist-head" title="${esc([c.text, STATUS_LABEL[c.status]].filter(Boolean).join(" — "))}">${icon}<span class="label">${esc(c.text.split("\n")[0])}</span></div>
+    <div class="hist-meta">${esc(meta)}</div>
+    ${c.final ? `<details><summary>${CHEV}Réponse</summary><div class="msg-assistant">${md(c.final)}</div></details>` : ""}
+    <span class="acts"><button class="act" data-reopen="${c.id}" title="Rouvrir" aria-label="Rouvrir">${REOPEN}</button></span></div>`;
+}
+
+function renderHistory() {
+  if (!histItems.length) {
+    $("histBody").innerHTML = `<div class="state empty">${SVG('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>')}
+      <strong>${$("histQ").value.trim() ? "Aucun résultat" : "Aucun élément résolu"}</strong></div>`;
+    return;
+  }
+  // projet › page › jour, dans l'ordre d'arrivée (du plus récent au plus ancien)
+  const projects = new Map();
+  for (const c of histItems) {
+    if (!projects.has(c.cwd)) projects.set(c.cwd, new Map());
+    const pages = projects.get(c.cwd);
+    if (!pages.has(c.url)) pages.set(c.url, []);
+    pages.get(c.url).push(c);
+  }
+  let html = "";
+  for (const [cwd, pages] of projects) {
+    let inner = "";
+    for (const [url, list] of pages) {
+      let path = url, host = "";
+      try { const u = new URL(url); path = u.pathname; host = u.host; } catch {}
+      const key = "hg:" + url, open = !collapsed[key];
+      let rows = "", day = "";
+      for (const c of list) {
+        const d = dayLabel(c.resolvedAt);
+        if (d !== day) { rows += `<div class="day">${esc(d)}</div>`; day = d; }
+        rows += histRow(c);
+      }
+      inner += `<div class="page"><button class="node" data-toggle="${esc(key)}" aria-expanded="${open}" title="${esc(url)}">
+        <span class="label">${esc(path)}<span class="host">${esc(host)}</span></span>
+        <span class="count">${list.length}</span>${CHEV}</button>
+        <div class="children"${open ? "" : " hidden"}>${rows}</div></div>`;
+    }
+    html += group("hp:" + cwd, { text: cwd.split("/").filter(Boolean).pop() || cwd, tip: cwd }, inner);
+  }
+  if (histItems.length < histTotal) html += `<button class="link more" data-more>Afficher plus (${histTotal - histItems.length})</button>`;
+  // Garde les réponses dépliées d'un rendu à l'autre.
+  const opened = new Set([...$("histBody").querySelectorAll("details[open]")].map((d) => d.closest(".hist").querySelector("[data-reopen]").dataset.reopen));
+  $("histBody").innerHTML = html;
+  for (const id of opened) $("histBody").querySelector(`[data-reopen="${id}"]`)?.closest(".hist").querySelector("details")?.setAttribute("open", "");
+}
+
+async function histClick(e) {
+  if (e.target.closest("[data-more]")) return loadHistory(true);
+  const toggle = e.target.closest("[data-toggle]");
+  if (toggle) {
+    const key = toggle.dataset.toggle;
+    collapsed[key] ? delete collapsed[key] : (collapsed[key] = true);
+    await chrome.storage.local.set({ collapsed });
+    return renderHistory();
+  }
+  const btn = e.target.closest("[data-reopen]");
+  if (btn) reopen(btn.dataset.reopen);
+}
+
+// Rouvrir : l'élément redevient actif (même session) puis s'ouvre comme un commentaire actif.
+async function reopen(id) {
+  const res = await chrome.runtime.sendMessage({ type: "reopen", id }).catch((e) => ({ error: e.message }));
+  showError(res?.error);
+  if (res?.error) return;
+  histItems = histItems.filter((c) => c.id !== id);
+  histTotal--;
+  closeHistory();
+  await refresh();
+  const c = comments.find((x) => x.id === id) || res.data;
+  if (isConv(c)) openConv(c.id);
+  else openComment(c, true);
 }
 
 chrome.tabs.onActivated.addListener(() => refresh().then(loadSettings));
