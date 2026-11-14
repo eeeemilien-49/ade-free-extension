@@ -1,7 +1,9 @@
 # App de bureau Claude Code Bridge
 
-Tableau de bord du designer. Pas de navigateur intégré : la page se regarde et se commente
-(⌘ + clic, bulles) dans Chrome ; l'app suit les projets et les commentaires.
+Tableau de bord du designer. Pas de navigateur intégré ni d'extension : l'app injecte le calque
+de commentaires (`extension/comment.js`) dans l'onglet actif de Chrome, Arc ou Safari via
+`injector/` (AppleScript). ⌘ + clic sur n'importe quel site ; hors projet local, lecture seule.
+Une fois par navigateur : autoriser JavaScript depuis AppleScript (message affiché dans l'app sinon).
 
 ```bash
 cd app && npm install && npm start            # ou : npm start -- ~/penta-v4
@@ -22,4 +24,4 @@ cd app && npm install && npm start            # ou : npm start -- ~/penta-v4
   (Node d'Electron) et arrêté à la fermeture. Token lu dans `~/.claude-chrome-bridge/token`.
 
 Variables pour tester sans toucher au bridge réel : `CLAUDE_BRIDGE_PORT`, `CLAUDE_BRIDGE_DIR`,
-`CLAUDE_BIN` (faux claude), `CLAUDE_APP_DATA` (données de l'app), `CLAUDE_APP_OPEN` (projet à ouvrir).
+`CLAUDE_BIN` (faux claude), `CLAUDE_APP_NO_INJECTOR=1` (ne pas piloter le navigateur), `CLAUDE_APP_DATA` (données de l'app), `CLAUDE_APP_OPEN` (projet à ouvrir).

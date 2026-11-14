@@ -1,9 +1,11 @@
 // Claude Code Bridge — app de bureau.
-// Tableau de bord : le ⌘+clic et les bulles restent dans Chrome (extension) ; l'app montre
+// Tableau de bord : le ⌘+clic et les bulles se font dans le vrai navigateur, où l'app injecte
+// le calque (injector/, via AppleScript, sans extension) ; l'app montre
 // l'arbre projets › pages › conversations › commentaires (extension/sidepanel.html) et gère
 // les projets (serveur de dev). Pas de navigateur intégré.
 const { app, BaseWindow, WebContentsView, Menu, dialog, ipcMain, shell: electronShell } = require("electron");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const fs = require("node:fs");
 const { execFileSync, execFile } = require("node:child_process");
 const { createChromeHost } = require("./chrome-host");
@@ -24,9 +26,9 @@ try {
   if (p) process.env.PATH = [...new Set([...p.split(":"), ...(process.env.PATH || "").split(":")])].join(":");
 } catch {}
 
-let win, shellView, sidebarView, host, bridge;
+let win, shellView, sidebarView, host, bridge, injector = null;
 let devServer = null;
-const state = { project: null, recents: [], server: { status: "idle" }, bridge: {} };
+const state = { project: null, recents: [], server: { status: "idle" }, bridge: {}, injector: null };
 
 // ---------- projets récents ----------
 const projectsFile = () => path.join(app.getPath("userData"), "projects.json");
@@ -52,10 +54,26 @@ function layout() {
   sidebarView.setBounds({ x: 0, y: TOP, width: SIDE, height: height - TOP });
 }
 
-// Les pages se regardent et se commentent dans le vrai navigateur (Chrome + extension).
+// Les pages se regardent et se commentent dans le vrai navigateur : celui où l'injecteur
+// a vu l'utilisateur en dernier, sinon Chrome.
 function openInBrowser(url) {
   if (!/^https?:/.test(url)) return;
-  execFile("open", ["-a", "Google Chrome", url], (err) => { if (err) electronShell.openExternal(url); });
+  const browser = injector?.state.browser || "Google Chrome";
+  execFile("open", ["-a", browser, url], (err) => { if (err) electronShell.openExternal(url); });
+}
+
+// Injecteur : calque comment.js dans l'onglet actif du navigateur, relayé vers le bridge
+// (bridgeDispatch garde les garde-fous : URL imposée, lecture seule hors local, actions limitées à la page).
+async function startInjector() {
+  if (process.platform !== "darwin" || process.env.CLAUDE_APP_NO_INJECTOR) return;
+  const { createInjector, bridgeDispatch } = await import(pathToFileURL(path.join(ROOT, "injector", "inject.mjs")).href);
+  injector = createInjector({ dispatch: bridgeDispatch(), log: (l) => console.log("[injecteur] " + l) });
+  injector.start();
+  let last = "";
+  setInterval(() => {
+    const s = JSON.stringify(injector.state);
+    if (s !== last) { last = s; state.injector = { ...injector.state }; pushState(); }
+  }, 700);
 }
 
 // ---------- projet ----------
@@ -98,7 +116,7 @@ function projectMenu() {
     ...(state.project ? [
       { type: "separator" },
       { label: "Redémarrer le serveur de dev", click: () => openProject(state.project.dir) },
-      ...(state.server.url ? [{ label: "Ouvrir dans Chrome", click: () => openInBrowser(state.server.url) }] : []),
+      ...(state.server.url ? [{ label: "Ouvrir dans le navigateur", click: () => openInBrowser(state.server.url) }] : []),
       { label: "Afficher dans le Finder", click: () => electronShell.openPath(state.project.dir) },
       { label: "Fermer le projet", click: () => { closeProject(); pushState(); } },
     ] : []),
@@ -142,6 +160,7 @@ async function main() {
 
   bridge = await ensureBridge({ port: PORT });
   state.bridge = { url: bridge.url, own: !!bridge.child, ok: !!bridge.token };
+  startInjector().catch((e) => console.error("[injecteur]", e));
 
   win = new BaseWindow({
     width: 1440, height: 920, minWidth: 820, minHeight: 500,
@@ -181,6 +200,7 @@ ipcMain.handle("app:do", (_e, action, arg) => actions[action]?.(arg));
 
 // Fermeture : on arrête le serveur de dev qu'on a lancé, et le bridge s'il est à nous.
 function cleanup() {
+  injector?.stop();
   devServer?.stop();
   try { bridge?.child?.kill("SIGTERM"); } catch {}
 }

@@ -21,6 +21,18 @@ function render() {
   $("server").title = st === "running"
     ? server.external ? "Serveur lancé hors de l'app : réutilisé, pas arrêté à la fermeture" : `Lancé par l'app : ${server.command}`
     : "";
+  // Injecteur : calque posé dans l'onglet actif du navigateur (AppleScript).
+  const inj = state.injector;
+  $("injector").hidden = !inj;
+  if (inj) {
+    $("injector").dataset.status = inj.error ? "error" : inj.injected ? "active" : "idle";
+    $("injectorText").textContent = inj.error ? "Calque bloqué" : inj.injected ? `${inj.browser} · ⌘ + clic actif` : inj.browser ? `${inj.browser} · en attente d'une page` : "En attente du navigateur";
+    let host = "";
+    try { host = new URL(inj.url).host; } catch {}
+    $("injector").title = inj.injected && host ? `Calque actif sur ${host}` : "Passe sur Chrome, Arc ou Safari pour commenter";
+  }
+  $("injectorError").hidden = !inj?.error;
+  $("injectorError").textContent = inj?.error || "";
   $("openChrome").hidden = !(project && st === "running" && server.url);
 
   $("welcome").hidden = !!project;
@@ -45,7 +57,7 @@ function render() {
       : st === "detecting" ? "Recherche d'un serveur déjà lancé…" : `Démarrage de ${project.name}…`;
     $("statusTitle").className = st === "starting" || st === "detecting" ? "shimmer" : "";
     $("statusDetail").textContent = st === "error" ? server.error || ""
-      : st === "running" ? "Ouvre la page dans Chrome et ⌘ + clic sur un élément pour le commenter."
+      : st === "running" ? "Ouvre la page dans le navigateur et ⌘ + clic sur un élément pour le commenter."
       : server.command ? "$ " + server.command : "";
     $("statusDetail").classList.toggle("error", st === "error");
     $("retry").hidden = st !== "error" && st !== "stopped";

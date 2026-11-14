@@ -16,19 +16,21 @@
     </div>
     <div class="bar">
       <span class="grow"></span>
+      <span id="injector" class="server" hidden><span class="dot"></span><span id="injectorText"></span></span>
       <span id="server" class="server" hidden><span class="dot"></span><span id="serverText">—</span></span>
-      <button id="openChrome" class="btn" hidden title="La page se commente dans Chrome (⌘ + clic)">
+      <button id="openChrome" class="btn" hidden title="La page se commente dans le navigateur (⌘ + clic)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-        Ouvrir dans Chrome
+        Ouvrir dans le navigateur
       </button>
     </div>
   </header>
 
   <main class="stage">
+    <div id="injectorError" class="banner" hidden></div>
     <section id="welcome" class="welcome" hidden>
       <h1>Ouvre un projet</h1>
-      <p>Son serveur de dev démarre ; ouvre la page dans Chrome et ⌘ + clic sur un élément pour le commenter.
-        Les commentaires apparaissent à gauche.</p>
+      <p>Son serveur de dev démarre. Dans Chrome, Arc ou Safari, ⌘ + clic sur un élément de n'importe
+        quelle page pour le commenter ; les commentaires apparaissent à gauche.</p>
       <button id="pick" class="primary">Ouvrir un dossier…</button>
       <ul id="recents" class="recents"></ul>
     </section>

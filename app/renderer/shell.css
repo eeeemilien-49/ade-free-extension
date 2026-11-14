@@ -38,9 +38,13 @@ svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width:
 .server { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: 6px;
   color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
 .server[hidden] { display: none; }
+.banner { margin: 16px 24px 0; padding: 10px 12px; border-radius: 8px; font-size: 12.5px; user-select: text;
+  color: var(--destructive); background: color-mix(in oklch, var(--destructive) 10%, transparent); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
 .server[data-status="running"] .dot { background: var(--success); }
 .server[data-status="starting"] .dot, .server[data-status="detecting"] .dot { background: var(--brand); animation: pulse 1.2s infinite; }
+#injector[data-status="active"] .dot { background: var(--success); }
+#injector[data-status="error"] .dot { background: var(--destructive); }
 .server[data-status="error"] .dot { background: var(--destructive); }
 @keyframes pulse { 50% { opacity: .3; } }
 
