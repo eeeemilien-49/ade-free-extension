@@ -239,11 +239,43 @@
   let comments = [], knownCwd = "", target = null, openId = null, pageUrl = location.href, pollTimer = null;
   const openRows = new Set(); // lignes d'outil dépliées par l'utilisateur
 
-  // ---------- liaison avec le service worker ----------
+  // ---------- liaison : service worker de l'extension, ou app de bureau ----------
+  // Sans extension, l'app injecte ce script dans l'onglet (AppleScript) puis relève
+  // régulièrement les requêtes en attente et rend les réponses. Rien de secret dans la
+  // page : le token du bridge reste dans l'app, qui contrôle chaque requête.
+  const EXT = typeof chrome !== "undefined" && !!chrome.runtime?.id;
+  const outbox = [], waiting = new Map(), listeners = [];
+  let seq = 0;
+  if (!EXT) {
+    Object.defineProperty(window, "__claudeBridge", { value: Object.freeze({
+      drain: () => JSON.stringify(outbox.splice(0)),
+      deliver: (json) => {
+        for (const r of JSON.parse(json)) { const w = waiting.get(r.id); if (w) { waiting.delete(r.id); w(r); } }
+      },
+      command: (json) => {
+        let out = null;
+        const msg = JSON.parse(json);
+        for (const l of listeners) l(msg, null, (d) => (out = d));
+        return JSON.stringify(out);
+      },
+    }) });
+  }
+  function send(msg) {
+    if (EXT) return chrome.runtime.sendMessage(msg);
+    return new Promise((resolve, reject) => {
+      const id = ++seq;
+      outbox.push({ id, msg });
+      waiting.set(id, resolve);
+      setTimeout(() => waiting.delete(id) && reject(new Error("App injoignable")), 30000);
+    });
+  }
+  const onMessage = (fn) => (EXT ? chrome.runtime.onMessage.addListener(fn) : listeners.push(fn));
+  const store = EXT ? chrome.storage.local : { get: async () => ({}), remove: async () => {} };
+
   async function call(type, payload = {}) {
     let res;
-    try { res = await chrome.runtime.sendMessage({ type, ...payload }); }
-    catch { throw new Error("Extension rechargée : recharge la page."); }
+    try { res = await send({ type, ...payload }); }
+    catch (e) { throw new Error(EXT ? "Extension rechargée : recharge la page." : e.message); }
     if (res?.error) throw new Error(res.error);
     return res?.data;
   }
@@ -689,9 +721,9 @@
           knownCwd = cwd || knownCwd;
           if (changed) render();
           // Fil demandé depuis le side panel avant d'arriver sur cette page.
-          const { pendingOpen } = await chrome.storage.local.get("pendingOpen");
+          const { pendingOpen } = await store.get("pendingOpen");
           if (pendingOpen?.url === location.href.split("#")[0] && list.some((c) => c.id === pendingOpen.id)) {
-            chrome.storage.local.remove("pendingOpen");
+            store.remove("pendingOpen");
             openThread(pendingOpen.id);
             const c = list.find((x) => x.id === pendingOpen.id);
             find(c.selector)?.scrollIntoView({ block: "center" });
@@ -710,11 +742,12 @@
     }, delay);
   }
   // Le side panel demande d'ouvrir un fil sur cette page.
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  onMessage((msg, _sender, sendResponse) => {
     // Instantané demandé pour une conversation : on masque notre UI le temps de la capture.
     if (msg.type === "cc:snapshot") {
       closeComposer();
       const data = { snapshot: snapshot(), url: location.href, title: document.title };
+      if (!EXT) return sendResponse(data); // l'app n'a pas besoin de masquer le calque
       host.style.visibility = "hidden";
       clearTimeout(unhide);
       unhide = setTimeout(() => (host.style.visibility = ""), 2000);
