@@ -1,4 +1,4 @@
-// Côté renderer du shim `chrome.*` (page et panneau de gauche) : chaque appel
+// Côté renderer du shim `chrome.*` (panneau de gauche) : chaque appel
 // part en IPC vers chrome-host.js, qui fait tourner background.js.
 const { ipcRenderer } = require("electron");
 
@@ -16,17 +16,7 @@ const fire = (ev, ...args) => { for (const l of ev.listeners) try { l(...args); 
 function createChrome() {
   const onMessage = event(), onChanged = event(), onUpdated = event(), onActivated = event();
 
-  // chrome.tabs.sendMessage reçu : même contrat que Chrome (return true = réponse asynchrone).
-  ipcRenderer.on("cc:message", (_e, id, msg) => {
-    let answered = false, isAsync = false;
-    const sendResponse = (data) => { if (!answered) { answered = true; ipcRenderer.send("cc:reply", id, data); } };
-    for (const l of onMessage.listeners) {
-      try { if (l(msg, { id: "claude-code-bridge" }, sendResponse) === true) isAsync = true; } catch (e) { console.error(e); }
-    }
-    if (!isAsync) sendResponse(undefined);
-  });
   ipcRenderer.on("cc:storage-changed", (_e, changes) => fire(onChanged, changes, "local"));
-  ipcRenderer.on("cc:tab-updated", (_e, id, info, tab) => fire(onUpdated, id, info, tab));
 
   const tabs = (op) => (...args) => ipcRenderer.invoke("cc:tabs", op, ...args);
   return {

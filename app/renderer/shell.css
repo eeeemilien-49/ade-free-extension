@@ -5,7 +5,7 @@
   --border: oklch(0.922 0 0); --input: oklch(0.922 0 0); --ring: oklch(0.708 0 0);
   --accent: oklch(0.97 0 0); --destructive: oklch(0.577 0.245 27.325);
   --success: oklch(0.6 0.15 150); --brand: #d97757;
-  --top: 44px; --side: 320px;
+  --top: 44px; --side: 360px;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -32,19 +32,11 @@ svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width:
 .project span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project svg { color: var(--muted-foreground); }
 .project:hover { background: var(--accent); }
-.nav { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; padding: 0 8px; }
-.icon { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px;
-  background: transparent; color: var(--muted-foreground); cursor: pointer; }
-.icon:hover:not(:disabled) { background: var(--accent); color: var(--foreground); }
-.icon:disabled { opacity: .35; cursor: default; }
-.address { flex: 1; min-width: 0; margin: 0 6px; }
-.address input { width: 100%; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px;
-  background: var(--muted); color: var(--foreground); font: inherit; outline: none; user-select: text; }
-.address input:focus { background: var(--background); border-color: var(--ring);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 30%, transparent); }
+.bar { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+.btn svg { width: 13px; height: 13px; }
+.top .btn { display: flex; align-items: center; gap: 6px; }
 .server { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--muted-foreground); font-size: 12px; cursor: pointer; white-space: nowrap; }
-.server:hover { background: var(--accent); color: var(--foreground); }
+  color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
 .server[hidden] { display: none; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
 .server[data-status="running"] .dot { background: var(--success); }
