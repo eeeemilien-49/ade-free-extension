@@ -29,120 +29,247 @@
   button:disabled { opacity: .5; cursor: default; }
   main { flex: 1; min-height: 0; display: grid; place-items: center; padding: 20px; }
   .phone { position: relative; height: 100%; max-width: 100%; aspect-ratio: var(--ratio, 9 / 19.5); border-radius: 44px;
-    overflow: hidden; background: #000; box-shadow: 0 0 0 10px #111, 0 0 0 11px #333, 0 24px 60px -20px rgb(0 0 0 / .5); }
-  .phone img { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+    overflow: hidden; background: #000; box-shadow: 0 0 0 10px #111, 0 0 0 11px #333, 0 24px 60px -20px rgb(0 0 0 / .5);
+    touch-action: none; outline: none; }
+  .phone img { display: block; width: 100%; height: 100%; object-fit: fill; user-select: none; -webkit-user-drag: none; pointer-events: none; }
   .layer { position: absolute; inset: 0; }
-  /* Zones commentées (une par ⌘+clic) et zone de visée qui suit le curseur avec ⌘ */
-  .tap { position: absolute; transform: translate(-50%, -50%); border-radius: 10px; color: transparent; font-size: 1px; overflow: hidden; }
-  .probe { display: none; pointer-events: auto; }
-  .empty { color: var(--muted-foreground); text-align: center; }
+  /* Composants commentés (un par ⌘+clic) et composant visé qui suit le curseur avec ⌘ */
+  .tap { position: absolute; color: transparent; font-size: 1px; overflow: hidden; border-radius: 4px; }
+  .tap.legacy { transform: translate(-50%, -50%); border-radius: 10px; }
+  .probe { display: none; }
 </style>
 <script>
 // Inscrit avant le calque (injecté à DOMContentLoaded) : ses écouteurs passent donc en premier,
-// et la zone touchée existe déjà quand le calque cherche l'élément sous le curseur.
+// et le composant visé existe déjà dans la page quand le calque cherche l'élément sous le curseur.
 (() => {
-  const TAP = 44; // taille de cible tactile recommandée par Apple, en points
-  let info = {}, size = { w: 0, h: 0, scale: 3 };
+  const TAP = 44;
+  let info = {}, screen = { w: 0, h: 0 };   // taille de l'écran en points iOS
+  let tree = [], treeAt = 0, treeLoading = null, depthUp = 0, lastHit = null;
   const $ = (s) => document.querySelector(s);
-  const pts = () => ({ w: size.w / size.scale, h: size.h / size.scale });
-  const api = (p, body) => fetch(p, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}).then((r) => r.json());
+  const api = (p, body) => fetch(p, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) }).then((r) => r.json());
+  const mod = (e) => e.metaKey || e.ctrlKey;
+  const ours = (e) => e.composedPath().some((n) => n.tagName === "CLAUDE-COMMENTS");
 
-  // Point sous le curseur, en points iOS, ou null si hors de l'écran.
+  // ── Coordonnées : curseur → points iOS
   function point(e) {
     const r = $(".phone")?.getBoundingClientRect();
-    if (!r || !size.w || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return null;
-    const { w, h } = pts();
-    return { x: Math.round(((e.clientX - r.left) / r.width) * w), y: Math.round(((e.clientY - r.top) / r.height) * h) };
+    if (!r || !screen.w || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return null;
+    return { x: ((e.clientX - r.left) / r.width) * screen.w, y: ((e.clientY - r.top) / r.height) * screen.h };
   }
-  function place(el, x, y) {
-    const { w, h } = pts();
-    Object.assign(el.style, { left: (x / w) * 100 + "%", top: (y / h) * 100 + "%", width: (TAP / w) * 100 + "%", height: (TAP / h) * 100 + "%" });
+  const pct = (v, total) => (v / total) * 100 + "%";
+  function placeBox(el, [x, y, w, h]) {
+    Object.assign(el.style, { left: pct(x, screen.w), top: pct(y, screen.h), width: pct(w, screen.w), height: pct(h, screen.h) });
   }
-  // Ce que Claude lit dans le HTML de l'élément commenté.
-  function describe(el, m) {
-    const { w, h } = pts();
-    el.id = m.id;
-    el.className = "tap";
-    el.dataset.ios = `point (${m.x}, ${m.y}) sur un écran de ${Math.round(w)}×${Math.round(h)} pt`;
-    el.dataset.app = `${info.name || ""} · ${info.bundle || ""} · ${info.device?.name || ""}`;
-    if (m.capture) el.dataset.capture = m.capture;
-    if (info.script) el.dataset.relancer = info.script;
-    el.textContent = `Zone touchée dans le simulateur iOS, au point (${m.x}, ${m.y}) en points, sur un écran de ${Math.round(w)}×${Math.round(h)} pt. `
-      + `App native ${info.name || ""} (${info.bundle || ""}). `
-      + (m.capture ? `Capture plein écran à lire avec l'outil Read : ${m.capture}. ` : "")
-      + `Retrouve la vue SwiftUI/UIKit concernée d'après la capture et le texte visible, applique la demande, `
-      + (info.script ? `puis recompile et relance l'app dans le simulateur avec : bash ${info.script}` : "");
+
+  // ── Arbre des composants (via l'exécutant XCUITest)
+  function loadTree(force) {
+    if (info.runner !== "ready") return Promise.resolve(tree);
+    if (!force && Date.now() - treeAt < 700) return Promise.resolve(tree);
+    return (treeLoading ||= fetch("/ui/tree").then((r) => r.json()).then((d) => {
+      if (d.nodes) {
+        tree = d.nodes; treeAt = Date.now();
+        const root = tree[0];
+        if (root && root.f[2] > 0 && !screen.w) setScreen(root.f[2], root.f[3]);
+      }
+      return tree;
+    }).catch(() => tree).finally(() => { treeLoading = null; }));
   }
+  const ignored = (n) => n.t === "application" || n.t === "window" || n.f[2] < 1 || n.f[3] < 1
+    || (n.t === "other" && n.f[2] * n.f[3] > screen.w * screen.h * 0.9 && !n.l && !n.id)
+    || /^Barre de défilement|^Scroll bar/i.test(n.l || "") || n.t === "scrollBar";
+  const contains = (n, p) => p.x >= n.f[0] && p.y >= n.f[1] && p.x <= n.f[0] + n.f[2] && p.y <= n.f[1] + n.f[3];
+  // Le plus petit composant sous le point, puis on remonte de « depthUp » parents (⌘↑ / ⌘↓).
+  function hit(p) {
+    let best = null;
+    for (const n of tree) {
+      if (ignored(n) || !contains(n, p)) continue;
+      if (!best || n.f[2] * n.f[3] < best.f[2] * best.f[3] || (n.f[2] * n.f[3] === best.f[2] * best.f[3] && n.d > best.d)) best = n;
+    }
+    for (let k = 0; best && k < depthUp; k++) {
+      let up = tree[best.p];
+      while (up && ignored(up)) up = tree[up.p];
+      if (!up) break;
+      best = up;
+    }
+    return best;
+  }
+  const quote = (s) => (s ? ` « ${String(s).replace(/\s+/g, " ").slice(0, 80)} »` : "");
+  const nodeLabel = (n) => `${n.t}${n.id ? "#" + n.id : ""}${quote(n.l)}`;
+  const shortLabel = (n) => `${n.t}${n.l ? " · " + n.l.replace(/\s+/g, " ").slice(0, 32) : n.id ? " · " + n.id : ""}`;
+  function describeNode(n, capture) {
+    const path = [];
+    for (let a = tree[n.p]; a; a = tree[a.p]) if (a.l || a.id || a.t !== "other") path.unshift(nodeLabel(a));
+    const inside = tree.filter((c) => c !== n && (c.l || c.v) && contains(n, { x: c.f[0] + 1, y: c.f[1] + 1 }) && c.d > n.d).slice(0, 25).map(nodeLabel);
+    const parent = tree[n.p];
+    const siblings = parent ? tree.filter((c) => c.p === parent.i && c !== n && (c.l || c.id)).slice(0, 12).map(nodeLabel) : [];
+    const [x, y, w, h] = n.f.map(Math.round);
+    return [
+      `Composant d'une app iOS native sélectionné dans le simulateur : ${nodeLabel(n)}${n.v ? `, valeur « ${n.v} »` : ""}${n.ph ? `, texte indicatif « ${n.ph} »` : ""}${n.sel ? ", sélectionné" : ""}${n.off ? ", désactivé" : ""}.`,
+      `Cadre : x ${x}, y ${y}, ${w}×${h} pt sur un écran de ${Math.round(screen.w)}×${Math.round(screen.h)} pt.`,
+      path.length ? `Chemin d'accessibilité : ${path.join(" > ")}.` : "",
+      inside.length ? `Contenu : ${inside.join(" ; ")}.` : "",
+      siblings.length ? `Voisins : ${siblings.join(" ; ")}.` : "",
+      `App ${info.name || ""} (${info.bundle || ""}), simulateur ${info.device?.name || ""}.`,
+      capture ? `Capture plein écran à lire avec l'outil Read : ${capture}.` : "",
+      `Retrouve la vue SwiftUI/UIKit correspondante en cherchant ces textes et identifiants dans le code, applique la demande, `
+        + (info.script ? `puis recompile et relance l'app dans le simulateur avec : bash ${info.script}` : ""),
+    ].filter(Boolean).join("\n");
+  }
+
+  // ── Marques persistantes (une par composant commenté), lues par le calque comme des éléments de la page
   function addMarker(m) {
     let el = document.getElementById(m.id);
     if (!el) { el = document.createElement("div"); $(".layer").appendChild(el); }
-    describe(el, m);
-    place(el, m.x, m.y);
+    el.id = m.id;
+    el.className = "tap" + (m.box ? "" : " legacy");
+    if (m.label) el.dataset.ccLabel = m.label;
+    if (m.capture) el.dataset.capture = m.capture;
+    if (info.script) el.dataset.relancer = info.script;
+    el.textContent = m.desc || `Zone touchée dans le simulateur iOS, au point (${Math.round(m.x)}, ${Math.round(m.y)}) en points. App native ${info.name || ""} (${info.bundle || ""}). `
+      + (m.capture ? `Capture plein écran à lire avec l'outil Read : ${m.capture}. ` : "")
+      + (info.script ? `Après modification, recompile et relance avec : bash ${info.script}` : "");
+    if (m.box) placeBox(el, [m.x, m.y, m.w, m.h]);
+    else Object.assign(el.style, { left: pct(m.x, screen.w), top: pct(m.y, screen.h), width: pct(TAP, screen.w), height: pct(TAP, screen.h) });
     return el;
   }
 
-  addEventListener("mousemove", (e) => {
+  // ── Visée avec ⌘ : la sonde prend la forme du composant sous le curseur
+  function aim(e) {
     const probe = $(".probe");
     if (!probe) return;
-    const p = (e.metaKey || e.ctrlKey) && point(e);
-    probe.style.display = p ? "block" : "none";
-    if (p) { place(probe, p.x, p.y); probe.id = `ecran-${p.x}-${p.y}`; }
+    const p = mod(e) && !ours(e) && point(e);
+    if (!p) { probe.style.display = "none"; lastHit = null; return; }
+    const n = hit(p);
+    lastHit = n ? { n, p } : { n: null, p };
+    const f = n ? n.f : [p.x - TAP / 2, p.y - TAP / 2, TAP, TAP];
+    probe.style.display = "block";
+    placeBox(probe, f);
+    probe.dataset.ccLabel = n ? shortLabel(n) : "zone";
+    probe.id = n ? `ios-${n.i}` : `ios-zone`;
+  }
+  let lastMove = null;
+  addEventListener("mousemove", (e) => {
+    lastMove = e;
+    if (mod(e)) { loadTree().then(() => lastMove === e && aim(e)); }
+    aim(e);
   }, true);
-  addEventListener("keyup", (e) => { if (e.key === "Meta" || e.key === "Control") $(".probe").style.display = "none"; }, true);
+  addEventListener("keydown", (e) => {
+    if (e.key === "Meta" || e.key === "Control") { depthUp = 0; loadTree(true).then(() => lastMove && aim(lastMove)); }
+    if (mod(e) && (e.key === "ArrowUp" || e.key === "ArrowDown") && lastMove) {
+      e.preventDefault();
+      depthUp = Math.max(0, depthUp + (e.key === "ArrowUp" ? 1 : -1));
+      aim(Object.assign(lastMove, {}));
+    }
+  }, true);
+  addEventListener("keyup", (e) => { if (e.key === "Meta" || e.key === "Control") { $(".probe").style.display = "none"; depthUp = 0; } }, true);
 
-  // ⌘+appui : la zone devient une marque permanente (avec sa capture plein écran).
+  // ⌘+appui : le composant visé devient une marque permanente, avec sa description et une capture.
   addEventListener("pointerdown", (e) => {
-    if (!(e.metaKey || e.ctrlKey) || e.button !== 0) return;
+    if (!mod(e) || e.button !== 0 || ours(e)) return;
     const p = point(e);
     if (!p) return;
+    aim(e);
     $(".probe").style.display = "none";
-    const m = { id: `ecran-${p.x}-${p.y}-${Date.now().toString(36)}`, x: p.x, y: p.y };
+    const n = lastHit?.n;
+    const slug = (n?.l || n?.id || n?.t || "zone").normalize("NFD").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").slice(0, 24).toLowerCase();
+    const m = n
+      ? { id: `ios-${n.t}-${slug}-${Date.now().toString(36)}`, x: n.f[0], y: n.f[1], w: n.f[2], h: n.f[3], box: true, label: shortLabel(n) }
+      : { id: `ios-zone-${Date.now().toString(36)}`, x: p.x - TAP / 2, y: p.y - TAP / 2, w: TAP, h: TAP, box: true, label: "zone" };
+    m.desc = n ? describeNode(n) : "";
     const el = addMarker(m);
     api("/snap", { id: m.id }).then((r) => {
-      if (r.path) { m.capture = r.path; describe(el, m); }
-      api("/markers", m);
-    }).catch(() => api("/markers", m));
+      if (r.path) { m.capture = r.path; if (n) m.desc = describeNode(n, r.path); addMarker(m); }
+    }).catch(() => {}).finally(() => api("/markers", m));
   }, true);
 
-  // Miroir : une image après l'autre (pas de file d'attente si l'écran est lent).
-  let lastUrl = null;
-  async function frames() {
-    if (document.hidden) return setTimeout(frames, 500);
-    try {
-      const r = await fetch("/frame?t=" + Date.now());
-      if (r.ok) {
-        const url = URL.createObjectURL(await r.blob());
-        const img = $(".phone img");
-        await new Promise((ok) => { img.onload = ok; img.onerror = ok; img.src = url; });
-        if (lastUrl) URL.revokeObjectURL(lastUrl);
-        lastUrl = url;
-        if (img.naturalWidth && img.naturalWidth !== size.w) {
-          size = { w: img.naturalWidth, h: img.naturalHeight, scale: img.naturalWidth >= 1000 ? 3 : 2 };
-          $(".phone").style.setProperty("--ratio", `${size.w} / ${size.h}`);
-          for (const m of await api("/markers")) addMarker(m);
-        }
-      }
-    } catch {}
-    setTimeout(frames, 120);
+  // ── Interaction directe avec l'app : clic = toucher, glisser = balayer, molette = défiler, clavier = saisie
+  let down = null, focused = false;
+  addEventListener("pointerdown", (e) => {
+    focused = !ours(e) && !!point(e);
+    if (mod(e) || e.button !== 0 || !focused) return;
+    down = { p: point(e), t: performance.now() };
+    e.preventDefault();
+  }, true);
+  addEventListener("pointerup", (e) => {
+    if (!down) return;
+    const start = down; down = null;
+    const r = $(".phone").getBoundingClientRect();
+    const end = point(e) || { x: Math.min(Math.max(0, ((e.clientX - r.left) / r.width) * screen.w), screen.w), y: Math.min(Math.max(0, ((e.clientY - r.top) / r.height) * screen.h), screen.h) };
+    const dist = Math.hypot(end.x - start.p.x, end.y - start.p.y);
+    const dt = Math.max(16, performance.now() - start.t);
+    const q = (o) => new URLSearchParams(Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)])));
+    const req = dist < 6
+      ? fetch("/ui/tap?" + q(start.p), { method: "POST" })
+      : fetch("/ui/swipe?" + q({ x: start.p.x, y: start.p.y, x2: end.x, y2: end.y, v: (dist / dt) * 1000 }), { method: "POST" });
+    req.finally(() => { treeAt = 0; });
+  }, true);
+  let wheel = null;
+  addEventListener("wheel", (e) => {
+    const p = point(e);
+    if (!p || ours(e)) return;
+    e.preventDefault();
+    if (!wheel) {
+      wheel = { p, dy: 0, dx: 0 };
+      setTimeout(() => {
+        const w = wheel; wheel = null;
+        const clamp = (v, max) => Math.max(-max, Math.min(max, v));
+        const dy = clamp(-w.dy / 2, screen.h * 0.4), dx = clamp(-w.dx / 2, screen.w * 0.4);
+        if (Math.abs(dy) < 4 && Math.abs(dx) < 4) return;
+        const y = Math.min(Math.max(w.p.y, 80 + Math.max(0, -dy)), screen.h - 80 - Math.max(0, dy));
+        const q = new URLSearchParams({ x: Math.round(w.p.x), y: Math.round(y), x2: Math.round(w.p.x + dx), y2: Math.round(y + dy), v: 1500 });
+        fetch("/ui/swipe?" + q, { method: "POST" }).finally(() => { treeAt = 0; });
+      }, 90);
+    }
+    wheel.dy += e.deltaY; wheel.dx += e.deltaX;
+  }, { capture: true, passive: false });
+  let typed = "", typeTimer = null;
+  addEventListener("keydown", (e) => {
+    if (!focused || mod(e) || e.altKey || ours(e) || info.runner !== "ready") return;
+    const k = e.key === "Backspace" ? "\b" : e.key === "Enter" ? "\n" : e.key === "Tab" ? "\t" : e.key.length === 1 ? e.key : "";
+    if (!k) return;
+    e.preventDefault();
+    typed += k;
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(() => { const t = typed; typed = ""; fetch("/ui/type", { method: "POST", body: t }); }, 60);
+  }, true);
+
+  // ── Écran : taille en points, flux vidéo
+  function setScreen(w, h) {
+    screen = { w, h };
+    $(".phone").style.setProperty("--ratio", `${w} / ${h}`);
+    api("/markers").then((list) => list.forEach(addMarker));
+  }
+  function sizeFromFrame() {
+    const img = new Image();
+    img.onload = () => { if (!screen.w) { const s = img.naturalWidth >= 1000 ? 3 : 2; setScreen(img.naturalWidth / s, img.naturalHeight / s); } };
+    img.src = "/frame?t=" + Date.now();
   }
 
   async function refreshInfo() {
+    const was = info.runner;
     info = await api("/info").catch(() => info);
     document.title = `${info.name || "App iOS"} — Simulateur iOS (app native)`;
     $(".name").textContent = info.name || "App iOS";
     $(".device").textContent = info.device?.name || "";
     const b = $(".build"), st = info.build?.status;
     b.className = "build " + (st || "");
-    b.textContent = { running: "Compilation…", ok: "Relancé", error: "Échec de la compilation" }[st] || "";
+    b.textContent = { running: "Compilation…", ok: "Relancé", error: "Échec de la compilation" }[st]
+      || (info.runner === "starting" ? "Préparation de la sélection…" : "");
     $("#rebuild").disabled = st === "running";
+    if (was !== "ready" && info.runner === "ready") loadTree(true);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     $("#rebuild").onclick = () => api("/rebuild", {}).then(refreshInfo);
     $("#simulator").onclick = () => api("/simulator", {});
-    refreshInfo();
+    refreshInfo().then(() => loadTree(true));
     setInterval(refreshInfo, 2000);
-    frames();
+    sizeFromFrame();
+    const img = $(".phone img");
+    const connect = () => { img.src = "/stream?t=" + Date.now(); };
+    img.onerror = () => { if (!document.hidden) setTimeout(connect, 1000); };
+    document.addEventListener("visibilitychange", () => { if (document.hidden) img.src = ""; else connect(); });
+    connect();
   });
 })();
 </script>
@@ -150,11 +277,11 @@
 <body>
   <header>
     <span class="name"></span><span class="device"></span><span class="build"></span>
-    <button id="simulator" title="Naviguer dans l'app depuis la fenêtre Simulator">Simulator</button>
+    <button id="simulator" title="Ouvrir la fenêtre Simulator">Simulator</button>
     <button id="rebuild">Recompiler</button>
   </header>
   <main>
-    <div class="phone"><img alt="Écran du simulateur" /><div class="layer"><div class="tap probe"></div></div></div>
+    <div class="phone" tabindex="0"><img alt="Écran du simulateur" /><div class="layer"><div class="tap probe"></div></div></div>
   </main>
 </body>
 </html>

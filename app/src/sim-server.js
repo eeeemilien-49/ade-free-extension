@@ -12,6 +12,11 @@ const { EventEmitter } = require("node:events");
 
 const DATA = path.join(os.homedir(), ".claude-chrome-bridge", "ios");
 const SHOTS = path.join(os.tmpdir(), "claude-chrome-bridge"); // dossier déjà autorisé aux sessions (--add-dir)
+const RUNNER_SRC = path.join(__dirname, "..", "ios-runner");
+const RUNNER_DIR = path.join(DATA, "Runner");
+const RUNNER_DERIVED = path.join(DATA, "DerivedData", "BridgeRunner");
+const RUNNER_PORT = 7830;
+const WORKERS = 3; // captures en parallèle : ~10 images/s
 
 const run = (cmd, args, opts = {}) => new Promise((resolve) =>
   execFile(cmd, args, { timeout: 20000, maxBuffer: 20 * 1024 * 1024, ...opts }, (err, out, errOut) => resolve({ ok: !err, out: String(out || ""), err: String(errOut || err?.message || "") })));
@@ -48,6 +53,9 @@ class SimServer extends EventEmitter {
     this.frame = null;        // { at, buf } dernière capture servie
     this.framing = null;      // capture en cours (une seule à la fois)
     this.build = { status: "idle", at: 0 };
+    this.streams = new Set(); // clients du flux MJPEG
+    this.seq = 0;
+    this.runner = { status: "idle" }; // exécutant XCUITest (arbre des composants, touchers)
   }
   set(patch) { Object.assign(this.state, patch); this.emit("change", this.state); }
   log(line) {
@@ -80,6 +88,48 @@ class SimServer extends EventEmitter {
       if (r.ok) this.log(`App lancée : ${this.info.bundle}`);
       else this.rebuild();
     }
+    this.startRunner();
+  }
+
+  // ── Exécutant XCUITest : compilé une fois, puis lancé en tâche de fond tant que le projet est ouvert.
+  async startRunner() {
+    if (this.stopped || this.runner.status === "starting" || this.runner.status === "ready") return;
+    this.runner = { status: "starting" };
+    const products = path.join(RUNNER_DERIVED, "Build", "Products");
+    const xctestrun = () => { try { return fs.readdirSync(products).find((f) => f.endsWith(".xctestrun")); } catch {} };
+    const srcTime = Math.max(...["project.yml", "Runner/Runner.swift", "Host/Host.swift"].map((f) => fs.statSync(path.join(RUNNER_SRC, f)).mtimeMs));
+    const builtTime = (() => { try { return fs.statSync(path.join(products, xctestrun())).mtimeMs; } catch { return 0; } })();
+    if (!xctestrun() || builtTime < srcTime) {
+      this.log("Préparation de la sélection des composants (une seule fois)…");
+      const g = await run("xcodegen", ["generate", "--quiet", "--spec", path.join(RUNNER_SRC, "project.yml"), "--project", RUNNER_DIR], { timeout: 60000 });
+      const b = g.ok && await run("xcodebuild", ["build-for-testing", "-project", path.join(RUNNER_DIR, "BridgeRunner.xcodeproj"),
+        "-scheme", "BridgeHost", "-destination", `id=${this.device.udid}`, "-derivedDataPath", RUNNER_DERIVED, "-quiet"], { timeout: 600000 });
+      if (!g.ok || !b?.ok || !xctestrun()) {
+        this.log(`Sélection des composants indisponible : ${(g.ok ? b?.err : g.err || "xcodegen introuvable").slice(-400)}`);
+        return (this.runner = { status: "error" });
+      }
+    }
+    if (this.stopped) return;
+    const p = spawn("xcodebuild", ["test-without-building", "-xctestrun", path.join(products, xctestrun()),
+      "-destination", `id=${this.device.udid}`, "-only-testing:BridgeRunner/Runner/testServe"],
+      { env: { ...process.env, TEST_RUNNER_BRIDGE_PORT: String(RUNNER_PORT), TEST_RUNNER_BRIDGE_APP: this.info.bundle } });
+    this.runner = { status: "starting", proc: p };
+    const cleanup = () => { try { p.kill("SIGINT"); } catch {} };
+    process.once("exit", cleanup);
+    p.on("close", () => process.removeListener("exit", cleanup));
+    const onOut = (d) => { if (String(d).includes("BRIDGE_READY")) { this.runner.status = "ready"; this.log("Sélection des composants prête."); } };
+    p.stdout.on("data", onOut); p.stderr.on("data", onOut);
+    p.on("close", () => {
+      const was = this.runner.status;
+      this.runner = { status: "idle" };
+      if (!this.stopped && was === "ready") setTimeout(() => this.startRunner(), 1000); // relance si l'exécutant tombe
+    });
+  }
+
+  ui(route, params, body) {
+    const qs = new URLSearchParams({ ...params, bundle: this.info.bundle });
+    return fetch(`http://127.0.0.1:${RUNNER_PORT}${route}?${qs}`, { method: body === undefined ? "GET" : "POST", body, signal: AbortSignal.timeout(8000) })
+      .then(async (r) => ({ code: r.status, text: await r.text() }));
   }
 
   async bootedDevice() {
@@ -149,6 +199,22 @@ echo "OK : ${name} relancé"
     return this.frame?.buf;
   }
 
+  // Flux MJPEG : plusieurs captures en vol, chaque nouvelle image est poussée aux clients.
+  pump(worker) {
+    if (!this.streams.size || this.stopped) return (this.pumping = Math.max(0, (this.pumping || 1) - 1));
+    const file = path.join(SHOTS, `frame-${this.info.name}-${worker}.jpg`);
+    const seq = ++this.seq;
+    run("xcrun", ["simctl", "io", this.device.udid, "screenshot", "--type=jpeg", file], { timeout: 8000 }).then((r) => {
+      if (r.ok && seq > (this.sent || 0)) {
+        this.sent = seq;
+        const buf = fs.readFileSync(file);
+        this.frame = { at: Date.now(), buf };
+        for (const res of this.streams) res.write(`--frame\r\ncontent-type: image/jpeg\r\ncontent-length: ${buf.length}\r\n\r\n`), res.write(buf), res.write("\r\n");
+      }
+      setTimeout(() => this.pump(worker), r.ok ? 0 : 500);
+    });
+  }
+
   markers() { try { return JSON.parse(fs.readFileSync(this.markersFile, "utf8")); } catch { return []; } }
 
   listen(port) {
@@ -177,14 +243,30 @@ echo "OK : ${name} relancé"
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store" });
       return res.end(buf);
     }
+    if (url.pathname === "/stream") {
+      res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame", "cache-control": "no-store", connection: "close" });
+      this.streams.add(res);
+      req.on("close", () => this.streams.delete(res));
+      if (!this.pumping) { this.pumping = WORKERS; for (let w = 0; w < WORKERS; w++) setTimeout(() => this.pump(w), w * 70); }
+      return;
+    }
     if (url.pathname === "/info") {
-      return json(200, { ...this.info, device: this.device, script: this.script, build: this.build });
+      return json(200, { ...this.info, device: this.device, script: this.script, build: this.build, runner: this.runner.status });
+    }
+    // Arbre des composants et touchers, relayés à l'exécutant XCUITest.
+    if (url.pathname.startsWith("/ui/")) {
+      if (this.runner.status !== "ready") return json(503, { error: "runner", status: this.runner.status });
+      const raw = req.method === "POST" ? await (async () => { let d = ""; for await (const c of req) d += c; return d; })() : undefined;
+      const r = await this.ui(url.pathname.slice(3), Object.fromEntries(url.searchParams), raw).catch((e) => ({ code: 502, text: JSON.stringify({ error: e.message }) }));
+      res.writeHead(r.code, { "content-type": "application/json", "cache-control": "no-store" });
+      return res.end(r.text);
     }
     if (url.pathname === "/markers" && req.method === "GET") return json(200, this.markers());
     if (url.pathname === "/markers" && req.method === "POST") {
       const m = await body();
       const list = this.markers().filter((x) => x.id !== m.id);
-      list.push({ id: String(m.id), x: Number(m.x), y: Number(m.y), w: Number(m.w), h: Number(m.h), capture: String(m.capture || "") });
+      list.push({ id: String(m.id), x: Number(m.x), y: Number(m.y), w: Number(m.w) || 0, h: Number(m.h) || 0,
+        box: !!m.box, desc: String(m.desc || "").slice(0, 4000), capture: String(m.capture || "") });
       fs.writeFileSync(this.markersFile, JSON.stringify(list.slice(-500)));
       return json(200, { ok: true });
     }
@@ -201,6 +283,10 @@ echo "OK : ${name} relancé"
   }
 
   stop() {
+    this.stopped = true;
+    try { this.runner.proc?.kill("SIGINT"); } catch {}
+    for (const res of this.streams) try { res.end(); } catch {}
+    this.streams.clear();
     try { this.server?.close(); } catch {}
     this.server = null;
     if (this.state.status !== "error") this.set({ status: "stopped" });

@@ -422,7 +422,7 @@
     }
     return parts.join(" > ");
   }
-  const label = (el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + [...el.classList].slice(0, 2).map((c) => "." + c).join("");
+  const label = (el) => el.dataset?.ccLabel || el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + [...el.classList].slice(0, 2).map((c) => "." + c).join("");
   function describe(el) {
     const ancestors = [];
     for (let p = el.parentElement; p && p !== document.body && ancestors.length < 5; p = p.parentElement) ancestors.push(label(p));
