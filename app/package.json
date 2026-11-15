@@ -2,7 +2,7 @@
   "name": "claude-code-bridge-app",
   "version": "0.1.0",
   "private": true,
-  "description": "App de bureau Claude Code Bridge : projets, navigateur intégré, commentaires.",
+  "description": "App de bureau Claude Code Bridge : projets, preview, commentaires, appairage de l extension.",
   "main": "src/main.js",
   "scripts": {
     "start": "electron ."

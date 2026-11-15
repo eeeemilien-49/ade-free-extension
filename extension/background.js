@@ -1,27 +1,44 @@
 // Service worker : relaie la page vers le bridge local (la page elle-même ne
 // peut pas l'appeler) et fait la capture d'écran de l'élément commenté.
-const BRIDGE = "http://127.0.0.1:7823";
+// Appairage sans configuration : l'app installe un hôte natif ; l'extension lui demande
+// le port et le token du bridge (Native Messaging), et sait rouvrir l'app.
+const NATIVE_HOST = "com.claude.code_bridge";
 
 // L'icône de l'extension ouvre le side panel.
 // (Protégé : une erreur ici ne doit jamais empêcher le reste du service worker de démarrer.)
 try { chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true })?.catch(console.error); } catch (e) { console.error(e); }
 
 async function config() {
-  return { token: "", mode: "acceptEdits", projects: {}, ...(await chrome.storage.local.get(["token", "mode", "projects"])) };
+  return { token: "", port: 7823, mode: "acceptEdits", projects: {}, ...(await chrome.storage.local.get(["token", "port", "mode", "projects"])) };
 }
 
-async function bridge(method, pathname, body) {
-  const { token } = await config();
-  if (!token) throw new Error("Token manquant : clique l'icône de l'extension pour le renseigner.");
+const failure = (code, message) => Object.assign(new Error(message), { code });
+const NO_APP = "L'app Claude Code Bridge n'est pas ouverte.";
+
+// Demande port et token à l'app via l'hôte natif.
+async function pair() {
+  let r;
+  try { r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { type: "hello" }); }
+  catch { throw failure("nohost", "Installe et ouvre l'app Claude Code Bridge."); }
+  if (!r?.ok) throw failure(r?.canOpen ? "noapp" : "nohost", r?.canOpen ? NO_APP : "Installe et ouvre l'app Claude Code Bridge.");
+  await chrome.storage.local.set({ token: r.token, port: r.port });
+  return r;
+}
+
+async function bridge(method, pathname, body, retry = true) {
+  const { token, port } = await config();
+  if (!token && retry) { await pair(); return bridge(method, pathname, body, false); }
   let res;
   try {
-    res = await fetch(BRIDGE + pathname, {
+    res = await fetch(`http://127.0.0.1:${port}` + pathname, {
       method, headers: { "content-type": "application/json", "x-bridge-token": token },
       body: body && JSON.stringify(body),
     });
   } catch {
-    throw new Error("Bridge injoignable — lance : node bridge/server.mjs");
+    if (retry) { await pair(); return bridge(method, pathname, body, false); }
+    throw failure("noapp", NO_APP);
   }
+  if (res.status === 401 && retry) { await pair(); return bridge(method, pathname, body, false); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
@@ -115,6 +132,15 @@ const handlers = {
   comment: ({ id }) => bridge("GET", "/comment?id=" + encodeURIComponent(id)),
   reopen: ({ id, text }) => bridge("POST", "/reopen", { id, text }),
   health: () => bridge("GET", "/health"),
+  // Rouvre l'app (hôte natif), puis attend que le bridge réponde.
+  async openApp() {
+    const r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { type: "open" }).catch(() => null);
+    if (!r?.ok) throw failure("nohost", r?.error || "Installe et ouvre l'app Claude Code Bridge.");
+    for (let i = 0; i < 40; i++) {
+      try { return await pair(); } catch { await new Promise((ok) => setTimeout(ok, 500)); }
+    }
+    throw failure("noapp", NO_APP);
+  },
   all: () => bridge("GET", "/all"),
   async seen({ id }) {
     const { seen = {} } = await chrome.storage.local.get("seen");
@@ -128,7 +154,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!h) return false;
   Promise.resolve(h(msg, sender)).then(
     (data) => sendResponse({ data }),
-    (e) => sendResponse({ error: e.message }),
+    (e) => sendResponse({ error: e.message, code: e.code }),
   );
   return true; // réponse asynchrone
 });

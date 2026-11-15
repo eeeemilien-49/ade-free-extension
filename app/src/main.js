@@ -1,24 +1,26 @@
 // Claude Code Bridge — app de bureau.
-// Tableau de bord : le ⌘+clic et les bulles se font dans le vrai navigateur, où l'app injecte
-// le calque (injector/, via AppleScript, sans extension) ; l'app montre
-// l'arbre projets › pages › conversations › commentaires (extension/sidepanel.html) et gère
-// les projets (serveur de dev). Pas de navigateur intégré.
+// Fenêtre = coquille (barre du haut, accueil, guide d'installation) + panneau de gauche
+// (extension/sidepanel.html) + preview du projet (WebContentsView où l'on injecte extension/comment.js).
+// L'app lance le bridge et installe l'hôte natif : l'extension Chrome s'appaire toute seule
+// et voit les mêmes commentaires que la preview.
 const { app, BaseWindow, WebContentsView, Menu, dialog, ipcMain, shell: electronShell } = require("electron");
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
 const fs = require("node:fs");
 const { execFileSync, execFile } = require("node:child_process");
 const { createChromeHost } = require("./chrome-host");
 const { ensureBridge } = require("./bridge-process");
 const { DevServer } = require("./dev-server");
+const { installNativeHost, writeAppInfo, extensionSeen } = require("./native-install");
 
 const ROOT = path.join(__dirname, "..", "..");
 const EXT = path.join(ROOT, "extension");
 const PORT = Number(process.env.CLAUDE_BRIDGE_PORT || 7823);
-const TOP = 44, SIDE = 360;
+const TOP = 44, SIDE = 320;
+const PROTOCOL = "claude-bridge";
 
 app.setName("Claude Code Bridge");
 if (process.env.CLAUDE_APP_DATA) app.setPath("userData", path.resolve(process.env.CLAUDE_APP_DATA));
+if (!app.requestSingleInstanceLock()) app.quit();
 
 // Lancée depuis le Finder, l'app n'a pas le PATH du terminal (bun, claude, node…).
 try {
@@ -26,9 +28,10 @@ try {
   if (p) process.env.PATH = [...new Set([...p.split(":"), ...(process.env.PATH || "").split(":")])].join(":");
 } catch {}
 
-let win, shellView, sidebarView, host, bridge, injector = null;
+let win, shellView, sidebarView, pageView, host, bridge;
 let devServer = null;
-const state = { project: null, recents: [], server: { status: "idle" }, bridge: {}, injector: null };
+// view : "page" (preview) | "logs" (journaux du serveur) | "install" (guide de l'extension)
+const state = { project: null, recents: [], server: { status: "idle" }, page: {}, view: "page", bridge: {}, extension: null, chrome: null };
 
 // ---------- projets récents ----------
 const projectsFile = () => path.join(app.getPath("userData"), "projects.json");
@@ -43,6 +46,12 @@ function saveRecents() {
 // ---------- état → coquille ----------
 function pushState() {
   if (!shellView || shellView.webContents.isDestroyed()) return;
+  const wc = pageView.webContents;
+  const url = wc.getURL();
+  state.page = {
+    url: url === "about:blank" ? "" : url, title: wc.getTitle(), loading: wc.isLoading(),
+    canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(),
+  };
   shellView.webContents.send("app:state", state);
   layout();
 }
@@ -52,28 +61,45 @@ function layout() {
   const { width, height } = win.getContentBounds();
   shellView.setBounds({ x: 0, y: 0, width, height });
   sidebarView.setBounds({ x: 0, y: TOP, width: SIDE, height: height - TOP });
+  pageView.setBounds({ x: SIDE, y: TOP, width: width - SIDE, height: height - TOP });
+  pageView.setVisible(!!state.page.url && state.view === "page");
 }
+function setView(v) { state.view = v; pushState(); }
 
-// Les pages se regardent et se commentent dans le vrai navigateur : celui où l'injecteur
-// a vu l'utilisateur en dernier, sinon Chrome.
-function openInBrowser(url) {
+function navigate(url) {
+  if (!/^[a-z]+:/i.test(url)) url = (/^(localhost|127\.|\[::1\])/.test(url) ? "http://" : "https://") + url;
   if (!/^https?:/.test(url)) return;
-  const browser = injector?.state.browser || "Google Chrome";
-  execFile("open", ["-a", browser, url], (err) => { if (err) electronShell.openExternal(url); });
+  state.view = "page";
+  pageView.webContents.loadURL(url).catch(() => {});
+  layout();
 }
 
-// Injecteur : calque comment.js dans l'onglet actif du navigateur, relayé vers le bridge
-// (bridgeDispatch garde les garde-fous : URL imposée, lecture seule hors local, actions limitées à la page).
-async function startInjector() {
-  if (process.platform !== "darwin" || process.env.CLAUDE_APP_NO_INJECTOR) return;
-  const { createInjector, bridgeDispatch } = await import(pathToFileURL(path.join(ROOT, "injector", "inject.mjs")).href);
-  injector = createInjector({ dispatch: bridgeDispatch(), log: (l) => console.log("[injecteur] " + l) });
-  injector.start();
-  let last = "";
-  setInterval(() => {
-    const s = JSON.stringify(injector.state);
-    if (s !== last) { last = s; state.injector = { ...injector.state }; pushState(); }
-  }, 700);
+// ---------- Chrome ----------
+// Le navigateur où ouvrir les pages : Chrome s'il est installé, sinon le navigateur par défaut.
+function findChrome() {
+  for (const name of ["Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Chromium"]) {
+    for (const dir of ["/Applications", path.join(app.getPath("home"), "Applications")]) {
+      if (fs.existsSync(path.join(dir, name + ".app"))) return name;
+    }
+  }
+  return null;
+}
+function openInChrome(url) {
+  url = String(url || "");
+  if (!/^(https?|chrome):/.test(url)) return;
+  if (!state.chrome) return void electronShell.openExternal(url);
+  execFile("open", ["-a", state.chrome, url], (err) => { if (err && /^https?:/.test(url)) electronShell.openExternal(url); });
+}
+
+// Extension : connectée si l'hôte natif a été appelé par elle (trace laissée sur le disque).
+function refreshExtension() {
+  const seen = extensionSeen();
+  const next = seen ? { seenAt: seen.seenAt } : null;
+  if (JSON.stringify(next) === JSON.stringify(state.extension)) return;
+  const first = !state.extension && next;
+  state.extension = next;
+  if (first && state.view === "install") state.view = "page";
+  pushState();
 }
 
 // ---------- projet ----------
@@ -87,9 +113,18 @@ async function openProject(dir) {
   app.addRecentDocument?.(dir);
   devServer = new DevServer(dir);
   devServer.on("change", (s) => {
+    const wasRunning = state.server.status === "running";
     state.server = { ...s, logs: s.logs.slice(-200) };
+    if (s.status === "running" && !wasRunning && s.url) {
+      // Le dossier du projet pour cette origine : les commentaires de la page iront dans ce projet.
+      const origin = new URL(s.url).origin;
+      const { projects = {} } = host.storageGet("projects");
+      if (projects[origin] !== dir) host.storageSet({ projects: { ...projects, [origin]: dir } });
+      navigate(s.url);
+    }
     pushState();
   });
+  if (state.view === "logs") state.view = "page";
   pushState();
   devServer.start();
 }
@@ -99,6 +134,8 @@ function closeProject() {
   devServer = null;
   state.project = null;
   state.server = { status: "idle" };
+  if (state.view === "logs") state.view = "page";
+  if (pageView.webContents.getURL()) pageView.webContents.loadURL("about:blank").then(() => pageView.webContents.navigationHistory.clear());
 }
 async function pickProject() {
   const r = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "Ouvrir un projet", buttonLabel: "Ouvrir" });
@@ -116,7 +153,7 @@ function projectMenu() {
     ...(state.project ? [
       { type: "separator" },
       { label: "Redémarrer le serveur de dev", click: () => openProject(state.project.dir) },
-      ...(state.server.url ? [{ label: "Ouvrir dans le navigateur", click: () => openInBrowser(state.server.url) }] : []),
+      { label: state.view === "logs" ? "Revenir à la page" : "Journaux du serveur", click: () => setView(state.view === "logs" ? "page" : "logs") },
       { label: "Afficher dans le Finder", click: () => electronShell.openPath(state.project.dir) },
       { label: "Fermer le projet", click: () => { closeProject(); pushState(); } },
     ] : []),
@@ -129,27 +166,61 @@ const actions = {
   pick: pickProject,
   open: (dir) => openProject(dir),
   projectMenu: ({ x, y }) => projectMenu().popup({ window: win, x: Math.round(x), y: Math.round(y) }),
-  openUrl: (url) => openInBrowser(String(url || "")),
+  navigate: (url) => navigate(String(url || "").trim()),
+  back: () => pageView.webContents.navigationHistory.goBack(),
+  forward: () => pageView.webContents.navigationHistory.goForward(),
+  reload: () => pageView.webContents.reload(),
   restart: () => state.project && openProject(state.project.dir),
+  toggleLogs: () => setView(state.view === "logs" ? "page" : "logs"),
+  openInChrome: () => openInChrome(state.page.url || state.server.url),
+  // Guide d'installation de l'extension (en attendant le Chrome Web Store).
+  install: () => setView(state.view === "install" ? "page" : "install"),
+  openExtensionsPage: () => openInChrome("chrome://extensions"),
+  revealExtension: () => electronShell.showItemInFolder(path.join(EXT, "manifest.json")),
   ready: () => pushState(),
 };
 
 function buildMenu() {
+  const page = () => pageView.webContents;
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: "appMenu" },
     { label: "Fichier", submenu: [
       { label: "Ouvrir un projet…", accelerator: "CmdOrCtrl+O", click: pickProject },
+      { label: "Ouvrir l'adresse", accelerator: "CmdOrCtrl+L", click: () => { shellView.webContents.focus(); shellView.webContents.send("app:focus-address"); } },
+      { label: "Ouvrir dans Chrome", accelerator: "CmdOrCtrl+Shift+O", click: actions.openInChrome },
+      { type: "separator" },
+      { label: "Installer l'extension Chrome…", click: () => setView("install") },
       { type: "separator" }, { role: "close" },
     ] },
     { role: "editMenu" },
     { label: "Présentation", submenu: [
-      { label: "Recharger le panneau", accelerator: "CmdOrCtrl+R", click: () => sidebarView.webContents.reload() },
+      { label: "Recharger la page", accelerator: "CmdOrCtrl+R", click: () => page().reload() },
+      { label: "Recharger sans cache", accelerator: "CmdOrCtrl+Shift+R", click: () => page().reloadIgnoringCache() },
+      { label: "Précédent", accelerator: "CmdOrCtrl+[", click: () => page().navigationHistory.goBack() },
+      { label: "Suivant", accelerator: "CmdOrCtrl+]", click: () => page().navigationHistory.goForward() },
       { type: "separator" },
-      { label: "Outils de développement (panneau)", accelerator: "Alt+CmdOrCtrl+I", click: () => sidebarView.webContents.toggleDevTools() },
-      { label: "Outils de développement (coquille)", accelerator: "Alt+CmdOrCtrl+J", click: () => shellView.webContents.toggleDevTools() },
+      { label: "Zoom avant", accelerator: "CmdOrCtrl+Plus", click: () => page().setZoomLevel(page().getZoomLevel() + 0.5) },
+      { label: "Zoom arrière", accelerator: "CmdOrCtrl+-", click: () => page().setZoomLevel(page().getZoomLevel() - 0.5) },
+      { label: "Taille réelle", accelerator: "CmdOrCtrl+0", click: () => page().setZoomLevel(0) },
+      { type: "separator" },
+      { label: "Recharger le panneau", click: () => sidebarView.webContents.reload() },
+      { label: "Outils de développement (page)", accelerator: "Alt+CmdOrCtrl+I", click: () => page().toggleDevTools() },
+      { label: "Outils de développement (panneau)", accelerator: "Alt+CmdOrCtrl+J", click: () => sidebarView.webContents.toggleDevTools() },
+      { label: "Outils de développement (coquille)", click: () => shellView.webContents.toggleDevTools() },
     ] },
     { role: "windowMenu" },
   ]));
+}
+
+// Lien claude-bridge:// (app empaquetée) : claude-bridge://open?project=/chemin ou claude-bridge://open?url=…
+function handleLink(link) {
+  try {
+    const u = new URL(link);
+    const project = u.searchParams.get("project"), url = u.searchParams.get("url");
+    if (project) openProject(project);
+    else if (url) navigate(url);
+    win?.show();
+  } catch {}
 }
 
 // ---------- démarrage ----------
@@ -157,10 +228,25 @@ async function main() {
   await app.whenReady();
   loadRecents();
   buildMenu();
+  state.chrome = findChrome();
 
   bridge = await ensureBridge({ port: PORT });
   state.bridge = { url: bridge.url, own: !!bridge.child, ok: !!bridge.token };
-  startInjector().catch((e) => console.error("[injecteur]", e));
+
+  // Appairage avec l'extension : hôte natif + infos pour la rouvrir.
+  try {
+    const { installed } = installNativeHost();
+    console.log("[extension] hôte natif installé pour : " + (installed.join(", ") || "aucun navigateur trouvé"));
+  } catch (e) { console.error("[extension] hôte natif :", e.message); }
+  writeAppInfo({
+    port: PORT, pid: process.pid,
+    launch: app.isPackaged
+      ? { cmd: "/usr/bin/open", args: ["-a", process.execPath.replace(/\/Contents\/MacOS\/.*$/, "")] }
+      : { cmd: process.execPath, args: [path.join(__dirname, "..")], cwd: path.join(__dirname, "..") },
+  });
+  if (app.isPackaged) app.setAsDefaultProtocolClient(PROTOCOL);
+  refreshExtension();
+  setInterval(refreshExtension, 2000);
 
   win = new BaseWindow({
     width: 1440, height: 920, minWidth: 820, minHeight: 500,
@@ -172,18 +258,37 @@ async function main() {
   sidebarView = new WebContentsView({
     webPreferences: { preload: path.join(__dirname, "preload-sidebar.js"), contextIsolation: false, sandbox: false, nodeIntegration: false },
   });
+  pageView = new WebContentsView({
+    webPreferences: { preload: path.join(__dirname, "preload-page.js"), contextIsolation: true, sandbox: false, nodeIntegration: false, partition: "persist:pages" },
+  });
   win.contentView.addChildView(shellView);
   win.contentView.addChildView(sidebarView);
+  win.contentView.addChildView(pageView);
 
   host = createChromeHost({
     storeFile: path.join(app.getPath("userData"), "storage.json"),
     backgroundFile: path.join(EXT, "background.js"),
     bridgeUrl: bridge.url,
-    openInBrowser,
+    getPairing: () => ({ port: PORT, token: bridge.token }),
+    getPage: () => pageView.webContents,
+    getPageBounds: () => pageView.getBounds(),
+    navigate,
   });
-  // Le token vient du bridge (~/.claude-chrome-bridge/token) : rien à coller à la main.
-  if (bridge.token) host.storageSet({ token: bridge.token });
+  // Le token et le port viennent du bridge : rien à coller à la main.
+  if (bridge.token) host.storageSet({ token: bridge.token, port: PORT });
 
+  const pwc = pageView.webContents;
+  pwc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) navigate(url);
+    return { action: "deny" };
+  });
+  for (const ev of ["did-start-loading", "did-stop-loading", "page-title-updated", "did-navigate"]) pwc.on(ev, pushState);
+  pwc.on("did-finish-load", () => host.pageUpdated({ status: "complete" }));
+  pwc.on("did-navigate-in-page", () => { host.pageUpdated({ status: "complete" }); pushState(); });
+  pwc.on("did-fail-load", (_e, code, desc, url, isMain) => {
+    if (isMain && code !== -3) console.log(`[page] échec de chargement ${url} : ${desc}`);
+  });
+  pwc.on("console-message", (e) => { if (e.level === "error" || /claude-bridge/.test(e.message)) console.log(`[page] ${e.message}`); });
   sidebarView.webContents.on("console-message", (e) => { if (e.level === "error") console.log(`[panneau] ${e.message}`); });
 
   shellView.webContents.loadFile(path.join(__dirname, "..", "renderer", "shell.html"));
@@ -192,16 +297,24 @@ async function main() {
   win.on("closed", () => app.quit());
   layout();
 
-  const initial = process.env.CLAUDE_APP_OPEN || process.argv.slice(app.isPackaged ? 1 : 2).find((a) => !a.startsWith("-"));
+  const initial = process.env.CLAUDE_APP_OPEN || process.argv.slice(app.isPackaged ? 1 : 2).find((a) => !a.startsWith("-") && !a.startsWith(PROTOCOL + ":"));
   if (initial) openProject(initial.replace(/^~/, app.getPath("home")));
+  const link = process.argv.find((a) => a.startsWith(PROTOCOL + ":"));
+  if (link) handleLink(link);
 }
 
 ipcMain.handle("app:do", (_e, action, arg) => actions[action]?.(arg));
+app.on("open-url", (e, url) => { e.preventDefault(); if (win) handleLink(url); });
+app.on("second-instance", (_e, argv) => {
+  const link = argv.find((a) => a.startsWith(PROTOCOL + ":"));
+  if (link) handleLink(link);
+  win?.show(); win?.focus();
+});
 
 // Fermeture : on arrête le serveur de dev qu'on a lancé, et le bridge s'il est à nous.
 function cleanup() {
-  injector?.stop();
   devServer?.stop();
+  try { writeAppInfo({ pid: null }); } catch {}
   try { bridge?.child?.kill("SIGTERM"); } catch {}
 }
 app.on("before-quit", cleanup);

@@ -210,6 +210,10 @@
         background: var(--background); color: var(--foreground); border: 1px solid var(--border); box-shadow: 0 10px 30px -10px rgb(0 0 0 / .35); font-size: 12px; }
       .toast.show { display: flex; animation: pop-in .14s ease-out; }
       .toast .i { color: var(--destructive); }
+      .toast .open-app { flex: none; height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px;
+        background: var(--background); color: var(--foreground); font: inherit; font-weight: 500; cursor: pointer; }
+      .toast .open-app:hover { background: var(--accent); }
+      .toast .open-app[hidden] { display: none; }
 
       @media (prefers-reduced-motion: reduce) {
         *, *::after { animation: none !important; transition: none !important; }
@@ -246,7 +250,7 @@
           <button class="send" aria-label="Envoyer" disabled>${icon("send")}</button></div>
       </div>
     </div>
-    <div class="toast" role="status">${icon("alert")}<span></span></div>`;
+    <div class="toast" role="status">${icon("alert")}<span></span><button class="open-app" hidden>Ouvrir l'app</button></div>`;
   document.documentElement.appendChild(host);
   // Les évènements de notre UI ne doivent pas atteindre la page (raccourcis, menus…).
   for (const t of ["keydown", "keyup", "keypress", "mousedown", "mouseup", "click", "pointerdown", "pointerup", "wheel"]) {
@@ -262,52 +266,30 @@
   let comments = [], knownCwd = "", target = null, openId = null, pageUrl = location.href, pollTimer = null;
   const openRows = new Set(); // lignes d'outil dépliées par l'utilisateur
 
-  // ---------- liaison : service worker de l'extension, ou app de bureau ----------
-  // Sans extension, l'app injecte ce script dans l'onglet (AppleScript) puis relève
-  // régulièrement les requêtes en attente et rend les réponses. Rien de secret dans la
-  // page : le token du bridge reste dans l'app, qui contrôle chaque requête.
-  const EXT = typeof chrome !== "undefined" && !!chrome.runtime?.id;
-  const outbox = [], waiting = new Map(), listeners = [];
-  let seq = 0;
-  if (!EXT) {
-    Object.defineProperty(window, "__claudeBridge", { value: Object.freeze({
-      drain: () => JSON.stringify(outbox.splice(0)),
-      deliver: (json) => {
-        for (const r of JSON.parse(json)) { const w = waiting.get(r.id); if (w) { waiting.delete(r.id); w(r); } }
-      },
-      command: (json) => {
-        let out = null;
-        const msg = JSON.parse(json);
-        for (const l of listeners) l(msg, null, (d) => (out = d));
-        return JSON.stringify(out);
-      },
-    }) });
-  }
-  function send(msg) {
-    if (EXT) return chrome.runtime.sendMessage(msg);
-    return new Promise((resolve, reject) => {
-      const id = ++seq;
-      outbox.push({ id, msg });
-      waiting.set(id, resolve);
-      setTimeout(() => waiting.delete(id) && reject(new Error("App injoignable")), 30000);
-    });
-  }
-  const onMessage = (fn) => (EXT ? chrome.runtime.onMessage.addListener(fn) : listeners.push(fn));
-  const store = EXT ? chrome.storage.local : { get: async () => ({}), remove: async () => {} };
-
+  // ---------- liaison avec le service worker ----------
   async function call(type, payload = {}) {
     let res;
-    try { res = await send({ type, ...payload }); }
-    catch (e) { throw new Error(EXT ? "Extension rechargée : recharge la page." : e.message); }
-    if (res?.error) throw new Error(res.error);
+    try { res = await chrome.runtime.sendMessage({ type, ...payload }); }
+    catch { throw new Error("Extension rechargée : recharge la page."); }
+    if (res?.error) throw Object.assign(new Error(res.error), { code: res.code });
     return res?.data;
   }
-  function toast(text) {
+  // code "noapp" : l'app est fermée, on propose de l'ouvrir.
+  function toast(text, code) {
     q("span", toastEl).textContent = text;
+    const btn = q("button", toastEl);
+    btn.hidden = code !== "noapp";
+    btn.disabled = false;
     toastEl.classList.add("show");
     clearTimeout(toast.t);
-    toast.t = setTimeout(() => toastEl.classList.remove("show"), 4500);
+    toast.t = setTimeout(() => toastEl.classList.remove("show"), code === "noapp" ? 10000 : 4500);
   }
+  q("button", toastEl).onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    q("span", toastEl).textContent = "Ouverture de l'app…";
+    try { await call("openApp"); toastEl.classList.remove("show"); poll(0); }
+    catch (err) { toast(err.message, err.code); }
+  };
 
   // ---------- description de l'élément ----------
   function cssPath(el) {
@@ -510,7 +492,7 @@
         cwdInput.value = "";
         setTimeout(() => cwdInput.focus(), 0);
       }
-      toast(e.message);
+      toast(e.message, e.code);
     } finally {
       host.style.visibility = "";
     }
@@ -657,7 +639,7 @@
         try {
           const data = await call("revert", { id: c.id });
           diffs.set(c.id, { key: String(c.finishedAt || ""), data });
-        } catch (e) { toast(e.message); }
+        } catch (e) { toast(e.message, e.code); }
         renderThread(false);
       };
       box.appendChild(b);
@@ -746,7 +728,7 @@
       const updated = await call("launch", { id: c.id, url: location.href, selectors: { [c.id]: c.selector } });
       comments = comments.map((x) => (x.id === updated.id ? updated : x));
       render();
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast(e.message, e.code); }
     poll(0);
   };
   q(".el-chip", thread).onclick = () => { const c = comments.find((x) => x.id === openId); if (c) flashEl(find(c.selector)); };
@@ -755,7 +737,7 @@
     closeThread();
     comments = comments.filter((c) => c.id !== id);
     render();
-    try { await call("resolve", { id }); } catch (e) { toast(e.message); }
+    try { await call("resolve", { id }); } catch (e) { toast(e.message, e.code); }
   };
   async function reply() {
     const text = replyTa.value.trim();
@@ -770,7 +752,7 @@
       comments = comments.map((c) => (c.id === updated.id ? updated : c));
       render();
       renderThread(true);
-    } catch (err) { toast(err.message); }
+    } catch (err) { toast(err.message, err.code); }
     poll(0);
   }
   replyTa.addEventListener("input", () => { replyBtn.disabled = !replyTa.value.trim(); autoGrow(replyTa); });
@@ -847,9 +829,9 @@
           knownCwd = cwd || knownCwd;
           if (changed) render();
           // Fil demandé depuis le side panel avant d'arriver sur cette page.
-          const { pendingOpen } = await store.get("pendingOpen");
+          const { pendingOpen } = await chrome.storage.local.get("pendingOpen");
           if (pendingOpen?.url === location.href.split("#")[0] && list.some((c) => c.id === pendingOpen.id)) {
-            store.remove("pendingOpen");
+            chrome.storage.local.remove("pendingOpen");
             openThread(pendingOpen.id);
             const c = list.find((x) => x.id === pendingOpen.id);
             find(c.selector)?.scrollIntoView({ block: "center" });
@@ -868,12 +850,11 @@
     }, delay);
   }
   // Le side panel demande d'ouvrir un fil sur cette page.
-  onMessage((msg, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Instantané demandé pour une conversation : on masque notre UI le temps de la capture.
     if (msg.type === "cc:snapshot") {
       closeComposer();
       const data = { snapshot: snapshot(), url: location.href, title: document.title };
-      if (!EXT) return sendResponse(data); // l'app n'a pas besoin de masquer le calque
       host.style.visibility = "hidden";
       clearTimeout(unhide);
       unhide = setTimeout(() => (host.style.visibility = ""), 2000);
