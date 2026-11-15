@@ -24,6 +24,9 @@ cd app && npm install && npm start            # ou : npm start -- ~/penta-v4
   et `app.json` (port, PID, commande pour rouvrir l'app). L'hôte répond `hello` (port, token) et
   `open` (rouvre l'app) ; il laisse `extension.json` pour que l'app sache l'extension connectée.
   Bouton « Installer l'extension Chrome » : ouvrir chrome://extensions, mode développeur, glisser le dossier.
+- **Raccourcis** : ⌘O projet, ⌘L adresse, ⌘R recharger, ⇧⌘O Chrome, ⌘\\ panneau, ⌘K demander à Claude,
+  ⌘Y historique, ⌘, réglages, ⌥⌘L journaux du serveur. Apparence (Système / Clair / Sombre) dans Présentation ;
+  panneau et apparence sont mémorisés dans `prefs.json`.
 - **Lien `claude-bridge://open?project=…|url=…`** : enregistré seulement par l'app empaquetée.
 
 Variables pour tester sans toucher au réel : `CLAUDE_BRIDGE_PORT`, `CLAUDE_BRIDGE_DIR`, `HOME`

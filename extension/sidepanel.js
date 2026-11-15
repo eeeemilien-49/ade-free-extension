@@ -27,16 +27,18 @@ const STATUS_ICON = {
 const STATUS_LABEL = { queued: "en attente", running: "en cours", done: "terminé", error: "erreur", proposed: "proposé", stopped: "arrêté" };
 const REOPEN = SVG('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>');
 
+let loaded = false; // première réponse du service reçue
 let comments = [], seen = {}, collapsed = {}, current = null, activeId = null, lastHtml = "";
 let convId = null, convFull = null, lastConvHtml = ""; // conversation ouverte dans le panneau
 let histOpen = false, histItems = [], histTotal = 0, histSeq = 0, histTimer = 0; // vue Historique
 
 // ---------- réglages ----------
-$("toggleSettings").onclick = () => {
-  const s = $("settings");
-  s.hidden = !s.hidden;
-  $("toggleSettings").setAttribute("aria-expanded", String(!s.hidden));
-};
+$("toggleSettings").onclick = () => toggleSettings();
+function toggleSettings(open = $("settings").hidden) {
+  $("settings").hidden = !open;
+  $("toggleSettings").setAttribute("aria-expanded", String(open));
+  if (open) $("cwd").disabled ? $("mode").focus() : $("cwd").focus();
+}
 async function loadSettings() {
   const conf = { mode: "acceptEdits", projects: {}, ...(await chrome.storage.local.get(["mode", "projects"])) };
   let origin = "";
@@ -71,6 +73,7 @@ async function refresh() {
   const res = await chrome.runtime.sendMessage({ type: "all" }).catch((e) => ({ error: e.message }));
   showError(res?.error, res?.code);
   if (!res?.error) comments = res.data;
+  loaded = true;
   if (convId) {
     const conv = comments.find((c) => c.id === convId);
     if (!conv) closeConv();
@@ -105,9 +108,9 @@ async function markSeen(id) {
 }
 
 // ---------- rendu ----------
-function group(key, title, inner) {
+function group(key, title, inner, cls = "") {
   const open = !collapsed[key];
-  return `<div class="group"><button class="node" data-toggle="${esc(key)}" aria-expanded="${open}"${title.tip ? ` title="${esc(title.tip)}"` : ""}>
+  return `<div class="group ${cls}"><button class="node" data-toggle="${esc(key)}" aria-expanded="${open}"${title.tip ? ` title="${esc(title.tip)}"` : ""}>
     <span class="label">${esc(title.text)}</span>${CHEV}</button>
     <div class="children"${open ? "" : " hidden"}>${inner}</div></div>`;
 }
@@ -157,6 +160,9 @@ function render() {
     if (!pages.has(c.url)) pages.set(c.url, []);
     pages.get(c.url).push(c);
   }
+  // En cours : ce que Claude traite en ce moment, toutes pages confondues.
+  const running = comments.filter((c) => !isConv(c) && (c.status === "running" || c.status === "queued"));
+  if (running.length) html += group("running", { text: `En cours · ${running.length}` }, running.map(row).join(""), "running");
   const projectEntries = [...projects].sort((a, b) => latest([...b[1].values()].flat()) - latest([...a[1].values()].flat()));
   for (const [cwd, pages] of projectEntries) {
     let inner = "";
@@ -177,12 +183,17 @@ function render() {
     html += group("p:" + cwd, { text: name, tip: cwd }, inner);
   }
 
-  $("empty").hidden = comments.length > 0 || !$("error").hidden || !!convId || histOpen;
+  $("empty").hidden = comments.length > 0 || !$("error").hidden || !!convId || histOpen || !loaded;
+  const unread = comments.filter(isUnread).length;
+  $("unreadCount").hidden = !unread;
+  $("unreadCount").textContent = unread;
   if (html !== lastHtml) { $("tree").innerHTML = html; lastHtml = html; }
   $("tree").hidden = !!convId || histOpen;
   $("convView").hidden = !convId || histOpen;
   $("histView").hidden = !histOpen;
-  $("composer").hidden = histOpen;
+  $("composer").hidden = histOpen || (!convId && !canConverse());
+  $("tabComments").setAttribute("aria-selected", String(!histOpen));
+  $("toggleHistory").setAttribute("aria-selected", String(histOpen));
   renderConv();
   updateComposer();
 }
@@ -252,10 +263,12 @@ const canConverse = () => /^https?:/.test(current?.url || "");
 function updateComposer() {
   const conv = convId && comments.find((c) => c.id === convId);
   const busy = conv && (conv.status === "running" || conv.status === "queued");
-  $("prompt").placeholder = conv ? "Répondre (ex. « ajoute aussi… », « annule le 3 »)" : "Demander à Claude sur cette page…";
+  $("prompt").placeholder = conv ? "Répondre (ex. « annule le 3 »)" : "Demander à Claude sur cette page…";
   $("prompt").disabled = !conv && !canConverse();
   $("promptHint").textContent = conv ? "" : canConverse() ? "Propose des commentaires sur la page" : "Ouvre une page web pour demander";
   $("send").disabled = !$("prompt").value.trim() || $("prompt").disabled || !!busy;
+  $("enterHint").hidden = $("send").disabled;
+  $("promptHint").hidden = !!$("prompt").value.trim();
 }
 async function sendPrompt() {
   const text = $("prompt").value.trim();
@@ -349,7 +362,7 @@ async function openComment(c, reopened) {
 const PAGE_SIZE = 50;
 
 $("toggleHistory").onclick = () => (histOpen ? closeHistory() : openHistory());
-$("histBack").onclick = () => closeHistory();
+$("tabComments").onclick = () => { if (histOpen) closeHistory(); else if (convId) closeConv(); };
 $("histQ").addEventListener("input", () => { clearTimeout(histTimer); histTimer = setTimeout(() => loadHistory(), 200); });
 $("histQ").addEventListener("keydown", (e) => { if (e.key === "Escape") closeHistory(); });
 $("histBody").addEventListener("click", histClick);
@@ -467,6 +480,21 @@ async function reopen(id) {
   if (isConv(c)) openConv(c.id);
   else openComment(c, true);
 }
+
+// Raccourcis de l'app de bureau (menu Présentation, ⌘,) : l'app envoie « panel:command ».
+document.addEventListener("panel:command", (e) => {
+  const cmd = e.detail;
+  if (cmd === "settings") toggleSettings(true);
+  else if (cmd === "history") histOpen ? $("histQ").focus() : openHistory();
+  else if (cmd === "comments") { if (histOpen) closeHistory(); if (convId) closeConv(); }
+  else if (cmd === "prompt") { if (histOpen) closeHistory(); if (!$("composer").hidden) $("prompt").focus(); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || e.target === $("prompt") || e.target === $("histQ")) return;
+  if (!$("settings").hidden) toggleSettings(false);
+  else if (histOpen) closeHistory();
+  else if (convId) closeConv();
+});
 
 chrome.tabs.onActivated.addListener(() => refresh().then(loadSettings));
 chrome.tabs.onUpdated.addListener((id, info) => { if (info.status === "complete") refresh().then(loadSettings); });
