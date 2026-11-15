@@ -1,70 +1,74 @@
-// Coquille : barre du haut (projet, serveur, ouvrir dans Chrome) et volet du projet.
+// Coquille : barre du haut (projet, navigation, serveur, Chrome), accueil, journaux du serveur
+// et guide d'installation de l'extension.
 const $ = (id) => document.getElementById(id);
 const home = (p) => p.replace(/^\/Users\/[^/]+/, "~");
 const SERVER_LABEL = { detecting: "Recherche du serveur…", starting: "Démarrage…", error: "Erreur", stopped: "Arrêté" };
 let state = null;
 
 app.onState((s) => { state = s; render(); });
+app.onFocusAddress(() => { $("address").focus(); $("address").select(); });
 app.do("ready");
 
 function render() {
-  const { project, recents, server } = state;
-  const st = server.status;
+  const { project, recents, server, page, view, extension } = state;
   $("projectName").textContent = project?.name || "Aucun projet";
   $("project").title = project ? home(project.dir) : "Ouvrir un projet";
 
-  let host = "";
-  try { host = new URL(server.url).host; } catch {}
+  $("back").disabled = !page.canGoBack;
+  $("forward").disabled = !page.canGoForward;
+  $("reload").disabled = !page.url;
+  if (document.activeElement !== $("address")) $("address").value = page.url || "";
+
+  const st = server.status;
   $("server").hidden = !project;
   $("server").dataset.status = st;
+  let host = "";
+  try { host = new URL(server.url).host; } catch {}
   $("serverText").textContent = st === "running" ? host + (server.external ? " · externe" : "") : SERVER_LABEL[st] || "—";
   $("server").title = st === "running"
-    ? server.external ? "Serveur lancé hors de l'app : réutilisé, pas arrêté à la fermeture" : `Lancé par l'app : ${server.command}`
-    : "";
-  // Injecteur : calque posé dans l'onglet actif du navigateur (AppleScript).
-  const inj = state.injector;
-  $("injector").hidden = !inj;
-  if (inj) {
-    $("injector").dataset.status = inj.error ? "error" : inj.injected ? "active" : "idle";
-    $("injectorText").textContent = inj.error ? "Calque bloqué" : inj.injected ? `${inj.browser} · ⌘ + clic actif` : inj.browser ? `${inj.browser} · en attente d'une page` : "En attente du navigateur";
-    let host = "";
-    try { host = new URL(inj.url).host; } catch {}
-    $("injector").title = inj.injected && host ? `Calque actif sur ${host}` : "Passe sur Chrome, Arc ou Safari pour commenter";
-  }
-  $("injectorError").hidden = !inj?.error;
-  $("injectorError").textContent = inj?.error || "";
-  $("openChrome").hidden = !(project && st === "running" && server.url);
+    ? (server.external ? "Serveur lancé hors de l'app (réutilisé, pas arrêté à la fermeture)" : `Lancé par l'app : ${server.command}`) + " — clic : journaux"
+    : "Journaux du serveur";
 
-  $("welcome").hidden = !!project;
-  $("status").hidden = !project;
+  $("openChrome").disabled = !(page.url || server.url);
+  $("openChromeText").textContent = state.chrome && state.chrome !== "Google Chrome" ? `Ouvrir dans ${state.chrome}` : "Ouvrir dans Chrome";
+  $("install").hidden = !!extension;
+
+  const pageShown = !!page.url && view === "page";
+  $("installGuide").hidden = view !== "install";
+  $("welcome").hidden = !!project || pageShown || view === "install";
+  $("status").hidden = !project || pageShown || view === "install";
+  $("installState").textContent = extension ? "Extension connectée." : "En attente de l'extension…";
+  $("installState").classList.toggle("shimmer", !extension);
+  $("installState").classList.toggle("ok", !!extension);
 
   $("recents").innerHTML = "";
   for (const d of recents) {
+    const li = document.createElement("li");
     const b = document.createElement("button");
     b.innerHTML = "<span></span><small></small>";
     b.firstChild.textContent = d.split("/").pop();
     b.lastChild.textContent = home(d);
     b.onclick = () => app.do("open", d);
-    const li = document.createElement("li");
     li.append(b);
     $("recents").append(li);
   }
 
   if (project) {
-    $("statusTitle").textContent = st === "error" ? "Le serveur de dev n'a pas démarré"
-      : st === "running" ? `${project.name} tourne sur ${host}`
+    const logs = view === "logs";
+    const title = st === "error" ? "Le serveur de dev n'a pas démarré"
+      : st === "running" ? (logs ? "Journaux du serveur" : "Chargement de la page…")
       : st === "stopped" ? "Serveur arrêté"
       : st === "detecting" ? "Recherche d'un serveur déjà lancé…" : `Démarrage de ${project.name}…`;
-    $("statusTitle").className = st === "starting" || st === "detecting" ? "shimmer" : "";
-    $("statusDetail").textContent = st === "error" ? server.error || ""
-      : st === "running" ? "Ouvre la page dans le navigateur et ⌘ + clic sur un élément pour le commenter."
-      : server.command ? "$ " + server.command : "";
+    $("statusTitle").textContent = title;
+    $("statusTitle").classList.toggle("still", st === "error" || st === "stopped" || logs);
+    $("statusDetail").textContent = st === "error" ? server.error || "" : server.command ? "$ " + server.command : "";
     $("statusDetail").classList.toggle("error", st === "error");
     $("retry").hidden = st !== "error" && st !== "stopped";
-    const logs = $("logs");
-    const atBottom = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 30;
-    logs.textContent = (server.logs || []).join("\n");
-    if (atBottom) logs.scrollTop = logs.scrollHeight;
+    $("backToPage").hidden = !logs || !page.url;
+    const el = $("logs");
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    el.textContent = (server.logs || []).join("\n");
+    if (atBottom) el.scrollTop = el.scrollHeight;
   }
 }
 
@@ -73,5 +77,21 @@ $("project").onclick = () => {
   app.do("projectMenu", { x: r.left, y: r.bottom + 4 });
 };
 $("pick").onclick = () => app.do("pick");
+$("back").onclick = () => app.do("back");
+$("forward").onclick = () => app.do("forward");
+$("reload").onclick = () => app.do("reload");
+$("server").onclick = () => app.do("toggleLogs");
 $("retry").onclick = () => app.do("restart");
-$("openChrome").onclick = () => app.do("openUrl", state.server.url);
+$("backToPage").onclick = () => app.do("toggleLogs");
+$("openChrome").onclick = () => app.do("openInChrome");
+$("install").onclick = () => app.do("install");
+$("closeGuide").onclick = () => app.do("install");
+$("openExtensions").onclick = () => app.do("openExtensionsPage");
+$("revealExtension").onclick = () => app.do("revealExtension");
+$("addressForm").onsubmit = (e) => {
+  e.preventDefault();
+  const v = $("address").value.trim();
+  if (v) app.do("navigate", v);
+  $("address").blur();
+};
+$("address").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("address").blur(); render(); } });

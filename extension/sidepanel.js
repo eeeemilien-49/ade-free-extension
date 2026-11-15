@@ -38,16 +38,14 @@ $("toggleSettings").onclick = () => {
   $("toggleSettings").setAttribute("aria-expanded", String(!s.hidden));
 };
 async function loadSettings() {
-  const conf = { token: "", mode: "acceptEdits", projects: {}, ...(await chrome.storage.local.get(["token", "mode", "projects"])) };
+  const conf = { mode: "acceptEdits", projects: {}, ...(await chrome.storage.local.get(["mode", "projects"])) };
   let origin = "";
   try { origin = new URL(current?.url).origin; } catch {}
   $("origin").textContent = origin.replace(/^https?:\/\//, "") || "ce site";
   $("cwd").value = conf.projects[origin] || "";
   $("cwd").disabled = !origin.startsWith("http");
   $("cwd").dataset.origin = origin;
-  $("token").value = conf.token;
   $("mode").value = conf.mode;
-  if (!conf.token) { $("settings").hidden = false; $("toggleSettings").setAttribute("aria-expanded", "true"); }
 }
 $("cwd").onchange = async () => {
   const { projects = {} } = await chrome.storage.local.get("projects");
@@ -55,7 +53,6 @@ $("cwd").onchange = async () => {
   if (v) projects[o] = v; else delete projects[o];
   chrome.storage.local.set({ projects });
 };
-$("token").onchange = () => chrome.storage.local.set({ token: $("token").value.trim() }).then(refresh);
 $("mode").onchange = () => chrome.storage.local.set({ mode: $("mode").value });
 
 // Le côté du panneau est un réglage de Chrome, pas de l'extension : on se contente
@@ -72,7 +69,7 @@ async function refresh() {
   [current] = await chrome.tabs.query({ active: true, currentWindow: true });
   ({ seen = {}, collapsed = {} } = await chrome.storage.local.get(["seen", "collapsed"]));
   const res = await chrome.runtime.sendMessage({ type: "all" }).catch((e) => ({ error: e.message }));
-  showError(res?.error);
+  showError(res?.error, res?.code);
   if (!res?.error) comments = res.data;
   if (convId) {
     const conv = comments.find((c) => c.id === convId);
@@ -85,11 +82,20 @@ async function refresh() {
   }
   render();
 }
-function showError(msg) {
+function showError(msg, code) {
   $("error").hidden = !msg;
   $("errorText").textContent = msg || "";
+  $("openApp").hidden = code !== "noapp";
+  $("retry").hidden = code === "noapp";
 }
 $("retry").onclick = refresh;
+$("openApp").onclick = async () => {
+  $("openApp").disabled = true;
+  $("errorText").textContent = "Ouverture de l'app…";
+  const r = await chrome.runtime.sendMessage({ type: "openApp" }).catch((e) => ({ error: e.message }));
+  $("openApp").disabled = false;
+  if (r?.error) showError(r.error, r.code); else refresh();
+};
 const isUnread = (c) => (c.status === "done" || c.status === "error") && c.finishedAt && (seen[c.id] || 0) < c.finishedAt;
 const isConv = (c) => c.kind === "conversation";
 const kids = (conv) => comments.filter((c) => c.parentId === conv.id).sort((a, b) => a.n - b.n);
@@ -259,7 +265,7 @@ async function sendPrompt() {
   const res = conv
     ? await chrome.runtime.sendMessage({ type: "converseReply", id: conv.id, url: conv.url, text }).catch((e) => ({ error: e.message }))
     : await chrome.runtime.sendMessage({ type: "converse", tabId: current.id, text, cwd: $("cwd").value }).catch((e) => ({ error: e.message }));
-  showError(res?.error);
+  showError(res?.error, res?.code);
   if (res?.error) return updateComposer();
   $("prompt").value = "";
   autoGrow();
@@ -282,7 +288,7 @@ async function launch(payload) {
   render();
   const selectors = Object.fromEntries(list.map((c) => [c.id, c.selector]));
   const res = await chrome.runtime.sendMessage({ type: "launch", ...payload, url: list[0]?.url, selectors }).catch((e) => ({ error: e.message }));
-  showError(res?.error);
+  showError(res?.error, res?.code);
   refresh();
 }
 
@@ -365,7 +371,7 @@ async function loadHistory(more) {
   const res = await chrome.runtime.sendMessage({ type: "history", q: $("histQ").value.trim(), offset: more ? histItems.length : 0, limit: PAGE_SIZE })
     .catch((e) => ({ error: e.message }));
   if (seq !== histSeq) return; // réponse d'une recherche dépassée
-  showError(res?.error);
+  showError(res?.error, res?.code);
   if (res?.error) return;
   histItems = more ? histItems.concat(res.data.items) : res.data.items;
   histTotal = res.data.total;
@@ -451,7 +457,7 @@ async function histClick(e) {
 // Rouvrir : l'élément redevient actif (même session) puis s'ouvre comme un commentaire actif.
 async function reopen(id) {
   const res = await chrome.runtime.sendMessage({ type: "reopen", id }).catch((e) => ({ error: e.message }));
-  showError(res?.error);
+  showError(res?.error, res?.code);
   if (res?.error) return;
   histItems = histItems.filter((c) => c.id !== id);
   histTotal--;

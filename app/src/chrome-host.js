@@ -1,12 +1,16 @@
 // Côté processus principal du shim `chrome.*`.
 // Fait tourner extension/background.js tel quel (dans un contexte vm) : la logique
-// list/reply/resolve/launch/converseReply/seen/all/health… n'existe qu'une fois,
-// partagée par l'extension Chrome et l'app.
-// L'app n'a pas de navigateur : le ⌘+clic et les bulles restent dans Chrome (extension).
-// Ici, aucun onglet n'est ouvert ; « aller sur une page » l'ouvre dans le navigateur.
+// list/create/reply/resolve/launch/converse/seen/all/health… n'existe qu'une fois,
+// partagée par l'extension Chrome et l'app. Les API Chrome qu'il utilise sont
+// fournies ici : stockage (fichier JSON), onglet unique = la WebContentsView de la
+// page (preview), messages page ⇄ service (IPC), capture (webContents.capturePage).
+// Chrome (extension) et la preview parlent au même bridge : mêmes commentaires des deux côtés.
 const vm = require("node:vm");
 const fs = require("node:fs");
-const { ipcMain, webContents } = require("electron");
+const path = require("node:path");
+const { ipcMain, nativeImage, webContents } = require("electron");
+
+const TAB_ID = 1, WINDOW_ID = 1;
 
 function event() {
   const listeners = new Set();
@@ -18,8 +22,8 @@ function event() {
   };
 }
 
-function createChromeHost({ storeFile, backgroundFile, bridgeUrl, openInBrowser }) {
-  // ---------- chrome.storage.local (fichier JSON de l'app) ----------
+function createChromeHost({ storeFile, backgroundFile, bridgeUrl, getPairing, getPage, getPageBounds, navigate }) {
+  // ---------- chrome.storage.local ----------
   let store = {};
   try { store = JSON.parse(fs.readFileSync(storeFile, "utf8")); } catch {}
   let saveTimer = null;
@@ -58,18 +62,49 @@ function createChromeHost({ storeFile, backgroundFile, bridgeUrl, openInBrowser 
     applyChanges(changes);
   }
 
-  // ---------- onglets : aucun dans l'app ----------
-  // Un pseudo-onglet sans URL : le panneau désactive « Demander sur cette page » (la conversation
-  // se lance depuis Chrome) et un clic sur un commentaire ouvre sa page dans le navigateur.
-  const NO_TAB = { id: 1, windowId: 1, index: 0, active: true, url: "", title: "", status: "complete" };
-  const noPage = () => Promise.reject(new Error("Could not establish connection. Receiving end does not exist."));
+  // ---------- onglet unique : la page ----------
+  function tabInfo() {
+    const wc = getPage();
+    const url = wc && !wc.isDestroyed() ? wc.getURL() : "";
+    return {
+      id: TAB_ID, windowId: WINDOW_ID, index: 0, active: true, highlighted: true,
+      url, title: url ? wc.getTitle() : "", status: wc?.isLoading() ? "loading" : "complete",
+    };
+  }
+
+  // Messages vers la page (chrome.tabs.sendMessage) : le preload de la page répond par cc:reply.
+  let nextReq = 1;
+  const pending = new Map();
+  function sendToPage(msg) {
+    const wc = getPage();
+    if (!wc || wc.isDestroyed() || !wc.getURL()) return Promise.reject(new Error("Could not establish connection. Receiving end does not exist."));
+    const id = nextReq++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error("La page ne répond pas.")); }, 15000);
+      pending.set(id, { wc, resolve: (v) => { clearTimeout(timer); resolve(v); } });
+      wc.send("cc:message", id, msg);
+    });
+  }
+  ipcMain.on("cc:reply", (e, id, data) => {
+    const p = pending.get(id);
+    if (!p || p.wc !== e.sender) return;
+    pending.delete(id);
+    p.resolve(data);
+  });
+
+  async function captureVisibleTab() {
+    const wc = getPage();
+    if (!wc || wc.isDestroyed()) throw new Error("pas de page");
+    return (await wc.capturePage()).toDataURL();
+  }
+
   const tabs = {
-    query: async () => [NO_TAB],
-    get: async () => NO_TAB,
-    update: async (_id, props = {}) => { if (props.url) openInBrowser(props.url); return NO_TAB; },
-    create: async (props = {}) => { if (/^https?:/.test(props.url || "")) openInBrowser(props.url); return NO_TAB; },
-    sendMessage: noPage,
-    captureVisibleTab: noPage,
+    query: async () => [tabInfo()],
+    get: async () => tabInfo(),
+    update: async (_id, props = {}) => { if (props.url) navigate(props.url); return tabInfo(); },
+    create: async (props = {}) => { if (/^https?:/.test(props.url || "")) navigate(props.url); return tabInfo(); },
+    sendMessage: (_id, msg) => sendToPage(msg),
+    captureVisibleTab,
     onUpdated: event(),
     onActivated: event(),
   };
@@ -77,7 +112,11 @@ function createChromeHost({ storeFile, backgroundFile, bridgeUrl, openInBrowser 
   // ---------- service : background.js de l'extension ----------
   const onMessage = event();
   const chrome = {
-    runtime: { id: "claude-code-bridge", onMessage },
+    runtime: {
+      id: "claude-code-bridge", onMessage,
+      // Dans l'app, l'appairage est direct : port et token viennent du bridge lancé par l'app.
+      sendNativeMessage: async (_host, msg) => (msg?.type === "hello" ? { ok: true, app: true, ...getPairing() } : { ok: true, app: true }),
+    },
     storage: {
       local: {
         get: async (k) => storageGet(k),
@@ -96,6 +135,41 @@ function createChromeHost({ storeFile, backgroundFile, bridgeUrl, openInBrowser 
     btoa, atob, TextEncoder, TextDecoder, structuredClone,
   });
   vm.runInContext(fs.readFileSync(backgroundFile, "utf8"), ctx, { filename: backgroundFile });
+  // captureElement s'appuie sur OffscreenCanvas (absent de Node) : même rendu via capturePage.
+  ctx.captureElement = captureElement;
+
+  async function captureElement(_tab, rect) {
+    if (!rect || rect.width < 1 || rect.height < 1) return null;
+    const wc = getPage();
+    const view = getPageBounds();
+    const pad = 40;
+    const x = Math.max(0, Math.floor(rect.x - pad)), y = Math.max(0, Math.floor(rect.y - pad));
+    const x2 = Math.min(view.width, Math.ceil(rect.x + rect.width + pad));
+    const y2 = Math.min(view.height, Math.ceil(rect.y + rect.height + pad));
+    if (x2 - x < 4 || y2 - y < 4) return null;
+    const img = await wc.capturePage({ x, y, width: x2 - x, height: y2 - y });
+    const size = img.getSize();
+    const bmp = img.toBitmap(); // BGRA
+    // Taille réelle du bitmap (pixels), puis échelle pixels / CSS (2 sur écran Retina).
+    const k = Math.sqrt(bmp.length / 4 / (size.width * size.height)) || 1;
+    const W = Math.round(size.width * k), H = Math.round(bmp.length / 4 / W);
+    const s = W / (x2 - x);
+    // Contour de l'élément (#c96442, 2 px logiques), comme l'extension.
+    const t = Math.max(1, Math.round(2 * s));
+    const rx = Math.round((rect.x - x) * s), ry = Math.round((rect.y - y) * s);
+    const rw = Math.round(rect.width * s), rh = Math.round(rect.height * s);
+    const px = (X, Y) => {
+      if (X < 0 || Y < 0 || X >= W || Y >= H) return;
+      const i = (Y * W + X) * 4;
+      bmp[i] = 0x42; bmp[i + 1] = 0x64; bmp[i + 2] = 0xc9; bmp[i + 3] = 0xff;
+    };
+    for (let k = 0; k < t; k++) {
+      for (let X = rx; X < rx + rw; X++) { px(X, ry + k); px(X, ry + rh - 1 - k); }
+      for (let Y = ry; Y < ry + rh; Y++) { px(rx + k, Y); px(rx + rw - 1 - k, Y); }
+    }
+    const out = nativeImage.createFromBitmap(bmp, { width: W, height: H });
+    return "data:image/png;base64," + out.toPNG().toString("base64");
+  }
 
   function dispatch(msg, sender) {
     return new Promise((resolve) => {
@@ -108,17 +182,24 @@ function createChromeHost({ storeFile, backgroundFile, bridgeUrl, openInBrowser 
     });
   }
 
-  // ---------- IPC du panneau ----------
-  ipcMain.handle("cc:runtime", (e, msg) => dispatch(msg, { url: e.sender.getURL() }));
+  // ---------- IPC des renderers (page et panneau) ----------
+  ipcMain.handle("cc:runtime", (e, msg) => {
+    const fromPage = e.sender === getPage();
+    return dispatch(msg, fromPage ? { tab: tabInfo(), frameId: 0, url: e.sender.getURL() } : { url: e.sender.getURL() });
+  });
   ipcMain.handle("cc:storage", (_e, op, arg) => (op === "get" ? storageGet(arg) : op === "set" ? storageSet(arg) : storageRemove(arg)));
   ipcMain.handle("cc:tabs", async (_e, op, ...args) => {
-    if (typeof tabs[op] !== "function") throw new Error("chrome.tabs." + op + " non disponible");
+    if (!(op in tabs) || typeof tabs[op] !== "function") throw new Error("chrome.tabs." + op + " non disponible");
     return tabs[op](...args);
   });
 
-  // dispatch(msg, sender) : même entrée que chrome.runtime.sendMessage vers background.js
-  // (list, create, reply, resolve, launch…), pour tout autre transport (ex. injector/).
-  return { storageGet, storageSet, storageRemove, dispatch };
+  // La page a changé (chargement terminé, navigation) : prévenir le panneau.
+  function pageUpdated(info = { status: "complete" }) {
+    const tab = tabInfo();
+    for (const wc of webContents.getAllWebContents()) if (!wc.isDestroyed() && wc !== getPage()) wc.send("cc:tab-updated", TAB_ID, info, tab);
+  }
+
+  return { storageGet, storageSet, storageRemove, pageUpdated, dispatch };
 }
 
 module.exports = { createChromeHost };

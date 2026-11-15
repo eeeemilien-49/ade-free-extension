@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Claude Code Bridge",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "⌘+clic sur un élément pour le commenter : chaque commentaire lance une session Claude Code locale.",
-  "permissions": ["storage", "sidePanel"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAruyVSs/KLOX9zjA5HXBqQu6LiJwkGUyIByOa7M68/OaB0uBi8cTc6B7azPLhuVVtOpDaXFzr5FxK5ZvAfU9mD4Z7nyFEXSJTgCmNcayTB32XhIPzSM5TqHDavvf5ZHEh7UgUpcxt3DXbiwzenhEZwidTnxsIMABYOZ9ZuTXzA279uO6tSfp/CdPtFW2Uz/37r472+y8R8zI2nN84goATkcccwarxhYlZOoYt9J/11yXxaPZ5zc7Xfm570gFum3X6mU7PKSJM6LDYwu3KPqVP8brrWWHZ+mH1JLTeLOshMMONmIeoXkNfssoEjg5k8Qlg30ovgVK7BSU9I44i4GHU5wIDAQAB",
+  "permissions": ["storage", "sidePanel", "nativeMessaging"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [{ "matches": ["<all_urls>"], "js": ["comment.js"], "run_at": "document_idle" }],

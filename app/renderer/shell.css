@@ -5,7 +5,7 @@
   --border: oklch(0.922 0 0); --input: oklch(0.922 0 0); --ring: oklch(0.708 0 0);
   --accent: oklch(0.97 0 0); --destructive: oklch(0.577 0.245 27.325);
   --success: oklch(0.6 0.15 150); --brand: #d97757;
-  --top: 44px; --side: 360px;
+  --top: 44px; --side: 320px;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -32,19 +32,28 @@ svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width:
 .project span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project svg { color: var(--muted-foreground); }
 .project:hover { background: var(--accent); }
-.bar { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+.nav { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; padding: 0 8px; }
+.icon { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.icon:hover:not(:disabled) { background: var(--accent); color: var(--foreground); }
+.icon:disabled { opacity: .35; cursor: default; }
+.address { flex: 1; min-width: 0; margin: 0 6px; }
+.address input { width: 100%; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px;
+  background: var(--muted); color: var(--foreground); font: inherit; outline: none; user-select: text; }
+.address input:focus { background: var(--background); border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 30%, transparent); }
 .btn svg { width: 13px; height: 13px; }
-.top .btn { display: flex; align-items: center; gap: 6px; }
+.top .btn { display: flex; align-items: center; gap: 6px; margin-left: 4px; white-space: nowrap; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.ghost { border-color: transparent; color: var(--muted-foreground); }
+.btn.ghost:hover { color: var(--foreground); }
 .server { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: 6px;
-  color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
+  background: transparent; color: var(--muted-foreground); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.server:hover { background: var(--accent); color: var(--foreground); }
 .server[hidden] { display: none; }
-.banner { margin: 16px 24px 0; padding: 10px 12px; border-radius: 8px; font-size: 12.5px; user-select: text;
-  color: var(--destructive); background: color-mix(in oklch, var(--destructive) 10%, transparent); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
 .server[data-status="running"] .dot { background: var(--success); }
 .server[data-status="starting"] .dot, .server[data-status="detecting"] .dot { background: var(--brand); animation: pulse 1.2s infinite; }
-#injector[data-status="active"] .dot { background: var(--success); }
-#injector[data-status="error"] .dot { background: var(--destructive); }
 .server[data-status="error"] .dot { background: var(--destructive); }
 @keyframes pulse { 50% { opacity: .3; } }
 
@@ -78,3 +87,15 @@ svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width:
   -webkit-background-clip: text; color: transparent; animation: shimmer 2s linear infinite; }
 .shimmer.still { animation: none; background: none; color: inherit; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* ---------- guide d'installation de l'extension ---------- */
+.guide { max-width: 460px; margin: 12vh auto 0; padding: 0 24px; display: grid; gap: 10px; justify-items: start; }
+.guide h1 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.guide > p { color: var(--muted-foreground); }
+.steps { list-style: none; padding: 0; margin: 8px 0 4px; width: 100%; display: grid; gap: 6px; }
+.steps li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.steps .n { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 50%;
+  background: var(--muted); color: var(--muted-foreground); font-size: 12px; font-weight: 500; }
+.steps .what { flex: 1; }
+.wait { font-size: 12.5px; color: var(--muted-foreground); }
+.wait.ok { color: var(--success); }

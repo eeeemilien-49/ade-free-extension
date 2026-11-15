@@ -1,9 +1,8 @@
 # App de bureau Claude Code Bridge
 
-Tableau de bord du designer. Pas de navigateur intégré ni d'extension : l'app injecte le calque
-de commentaires (`extension/comment.js`) dans l'onglet actif de Chrome, Arc ou Safari via
-`injector/` (AppleScript). ⌘ + clic sur n'importe quel site ; hors projet local, lecture seule.
-Une fois par navigateur : autoriser JavaScript depuis AppleScript (message affiché dans l'app sinon).
+Projets, preview, tableau de bord. La page du projet s'affiche dans la preview avec le calque
+`extension/comment.js` (⌘ + clic) ; « Ouvrir dans Chrome » (⇧⌘O) l'ouvre dans le navigateur, où
+l'extension fait la même chose. Même bridge, mêmes commentaires.
 
 ```bash
 cd app && npm install && npm start            # ou : npm start -- ~/penta-v4
@@ -11,17 +10,21 @@ cd app && npm install && npm start            # ou : npm start -- ~/penta-v4
 
 - **Projets** (menu sous le nom du projet, ⌘O) : dossier natif, récents. Le serveur de dev est
   réutilisé s'il tourne déjà depuis le projet (« externe », jamais arrêté par l'app) ; sinon
-  `<bun|pnpm|yarn|npm> run dev` selon le lockfile, à la racine ou dans chaque workspace qui a un
-  script `dev` (monorepo). L'URL est lue dans la sortie ; « Ouvrir dans Chrome » ; le serveur
-  lancé par l'app s'arrête à la fermeture.
-- **Panneau de gauche** : `extension/sidepanel.html` tel quel (projets › pages › conversations ›
-  commentaires, conversations ouvertes dans le panneau, lancer / résoudre). Un clic sur un
-  commentaire ouvre sa page dans Chrome.
-- **Service** : `extension/background.js` tourne tel quel dans un contexte `vm` du processus
-  principal (`src/chrome-host.js`) avec un shim `chrome.*` (storage → fichier JSON, IPC).
-  Aucune logique dupliquée.
-- **Bridge** : réutilisé s'il écoute sur 127.0.0.1:7823, sinon `bridge/server.mjs` est lancé
-  (Node d'Electron) et arrêté à la fermeture. Token lu dans `~/.claude-chrome-bridge/token`.
+  `<bun|pnpm|yarn|npm> run dev` selon le lockfile (monorepo compris). L'URL est lue dans la sortie
+  et chargée dans la preview ; clic sur le serveur : journaux.
+- **Preview** : `WebContentsView` ; `src/preload-page.js` exécute `extension/comment.js` tel quel
+  dans un monde isolé, avec le shim `chrome.*` (`src/chrome-shim.js`).
+- **Panneau de gauche** : `extension/sidepanel.html` tel quel. Un clic sur un commentaire ouvre sa page dans la preview.
+- **Service** : `extension/background.js` tourne tel quel dans un contexte `vm` (`src/chrome-host.js`) :
+  storage → fichier JSON, onglet unique = la preview, capture via `capturePage`.
+- **Bridge** : réutilisé s'il écoute déjà, sinon lancé (Node d'Electron) et arrêté à la fermeture.
+- **Extension Chrome** : à chaque démarrage, `src/native-install.js` écrit le lanceur
+  `~/.claude-chrome-bridge/native-host` (→ `src/native-host.js`), le manifeste
+  `com.claude.code_bridge.json` dans `NativeMessagingHosts/` de chaque navigateur Chromium présent,
+  et `app.json` (port, PID, commande pour rouvrir l'app). L'hôte répond `hello` (port, token) et
+  `open` (rouvre l'app) ; il laisse `extension.json` pour que l'app sache l'extension connectée.
+  Bouton « Installer l'extension Chrome » : ouvrir chrome://extensions, mode développeur, glisser le dossier.
+- **Lien `claude-bridge://open?project=…|url=…`** : enregistré seulement par l'app empaquetée.
 
-Variables pour tester sans toucher au bridge réel : `CLAUDE_BRIDGE_PORT`, `CLAUDE_BRIDGE_DIR`,
-`CLAUDE_BIN` (faux claude), `CLAUDE_APP_NO_INJECTOR=1` (ne pas piloter le navigateur), `CLAUDE_APP_DATA` (données de l'app), `CLAUDE_APP_OPEN` (projet à ouvrir).
+Variables pour tester sans toucher au réel : `CLAUDE_BRIDGE_PORT`, `CLAUDE_BRIDGE_DIR`, `HOME`
+(manifestes natifs), `CLAUDE_BIN` (faux claude), `CLAUDE_APP_DATA` (données de l'app), `CLAUDE_APP_OPEN` (projet à ouvrir).
