@@ -10,6 +10,7 @@ const { execFileSync, execFile } = require("node:child_process");
 const { createChromeHost } = require("./chrome-host");
 const { ensureBridge } = require("./bridge-process");
 const { DevServer } = require("./dev-server");
+const { SimServer, isXcodeProject } = require("./sim-server");
 const { installNativeHost, writeAppInfo, extensionSeen } = require("./native-install");
 
 const ROOT = path.join(__dirname, "..", "..");
@@ -153,7 +154,8 @@ async function openProject(dir) {
   state.recents = [dir, ...state.recents.filter((d) => d !== dir)].slice(0, 12);
   saveRecents();
   app.addRecentDocument?.(dir);
-  devServer = new DevServer(dir);
+  // Projet iOS (Xcode) : miroir du simulateur commentable, à la place d'un serveur de dev.
+  devServer = isXcodeProject(dir) ? new SimServer(dir) : new DevServer(dir);
   devServer.on("change", (s) => {
     const wasRunning = state.server.status === "running";
     state.server = { ...s, logs: s.logs.slice(-200) };

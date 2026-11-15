@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Simulateur iOS</title>
+<style>
+  :root {
+    --background: oklch(0.985 0 0); --foreground: oklch(0.145 0 0); --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0); --border: oklch(0.922 0 0); --brand: #d97757;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --background: oklch(0.17 0 0); --foreground: oklch(0.985 0 0); --muted: oklch(0.269 0 0);
+      --muted-foreground: oklch(0.708 0 0); --border: oklch(1 0 0 / 10%); }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; background: var(--background); color: var(--foreground);
+    font: 13px/1.4 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", sans-serif; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--border); flex: none; }
+  header .name { font-weight: 600; }
+  header .device { color: var(--muted-foreground); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .build { color: var(--muted-foreground); font-size: 12px; }
+  header .build.running { color: var(--brand); }
+  header .build.error { color: oklch(0.6 0.2 25); }
+  button { font: inherit; font-size: 12px; color: inherit; background: var(--background); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+  button:hover { background: var(--muted); }
+  button:disabled { opacity: .5; cursor: default; }
+  main { flex: 1; min-height: 0; display: grid; place-items: center; padding: 20px; }
+  .phone { position: relative; height: 100%; max-width: 100%; aspect-ratio: var(--ratio, 9 / 19.5); border-radius: 44px;
+    overflow: hidden; background: #000; box-shadow: 0 0 0 10px #111, 0 0 0 11px #333, 0 24px 60px -20px rgb(0 0 0 / .5); }
+  .phone img { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+  .layer { position: absolute; inset: 0; }
+  /* Zones commentées (une par ⌘+clic) et zone de visée qui suit le curseur avec ⌘ */
+  .tap { position: absolute; transform: translate(-50%, -50%); border-radius: 10px; color: transparent; font-size: 1px; overflow: hidden; }
+  .probe { display: none; pointer-events: auto; }
+  .empty { color: var(--muted-foreground); text-align: center; }
+</style>
+<script>
+// Inscrit avant le calque (injecté à DOMContentLoaded) : ses écouteurs passent donc en premier,
+// et la zone touchée existe déjà quand le calque cherche l'élément sous le curseur.
+(() => {
+  const TAP = 44; // taille de cible tactile recommandée par Apple, en points
+  let info = {}, size = { w: 0, h: 0, scale: 3 };
+  const $ = (s) => document.querySelector(s);
+  const pts = () => ({ w: size.w / size.scale, h: size.h / size.scale });
+  const api = (p, body) => fetch(p, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}).then((r) => r.json());
+
+  // Point sous le curseur, en points iOS, ou null si hors de l'écran.
+  function point(e) {
+    const r = $(".phone")?.getBoundingClientRect();
+    if (!r || !size.w || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return null;
+    const { w, h } = pts();
+    return { x: Math.round(((e.clientX - r.left) / r.width) * w), y: Math.round(((e.clientY - r.top) / r.height) * h) };
+  }
+  function place(el, x, y) {
+    const { w, h } = pts();
+    Object.assign(el.style, { left: (x / w) * 100 + "%", top: (y / h) * 100 + "%", width: (TAP / w) * 100 + "%", height: (TAP / h) * 100 + "%" });
+  }
+  // Ce que Claude lit dans le HTML de l'élément commenté.
+  function describe(el, m) {
+    const { w, h } = pts();
+    el.id = m.id;
+    el.className = "tap";
+    el.dataset.ios = `point (${m.x}, ${m.y}) sur un écran de ${Math.round(w)}×${Math.round(h)} pt`;
+    el.dataset.app = `${info.name || ""} · ${info.bundle || ""} · ${info.device?.name || ""}`;
+    if (m.capture) el.dataset.capture = m.capture;
+    if (info.script) el.dataset.relancer = info.script;
+    el.textContent = `Zone touchée dans le simulateur iOS, au point (${m.x}, ${m.y}) en points, sur un écran de ${Math.round(w)}×${Math.round(h)} pt. `
+      + `App native ${info.name || ""} (${info.bundle || ""}). `
+      + (m.capture ? `Capture plein écran à lire avec l'outil Read : ${m.capture}. ` : "")
+      + `Retrouve la vue SwiftUI/UIKit concernée d'après la capture et le texte visible, applique la demande, `
+      + (info.script ? `puis recompile et relance l'app dans le simulateur avec : bash ${info.script}` : "");
+  }
+  function addMarker(m) {
+    let el = document.getElementById(m.id);
+    if (!el) { el = document.createElement("div"); $(".layer").appendChild(el); }
+    describe(el, m);
+    place(el, m.x, m.y);
+    return el;
+  }
+
+  addEventListener("mousemove", (e) => {
+    const probe = $(".probe");
+    if (!probe) return;
+    const p = (e.metaKey || e.ctrlKey) && point(e);
+    probe.style.display = p ? "block" : "none";
+    if (p) { place(probe, p.x, p.y); probe.id = `ecran-${p.x}-${p.y}`; }
+  }, true);
+  addEventListener("keyup", (e) => { if (e.key === "Meta" || e.key === "Control") $(".probe").style.display = "none"; }, true);
+
+  // ⌘+appui : la zone devient une marque permanente (avec sa capture plein écran).
+  addEventListener("pointerdown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.button !== 0) return;
+    const p = point(e);
+    if (!p) return;
+    $(".probe").style.display = "none";
+    const m = { id: `ecran-${p.x}-${p.y}-${Date.now().toString(36)}`, x: p.x, y: p.y };
+    const el = addMarker(m);
+    api("/snap", { id: m.id }).then((r) => {
+      if (r.path) { m.capture = r.path; describe(el, m); }
+      api("/markers", m);
+    }).catch(() => api("/markers", m));
+  }, true);
+
+  // Miroir : une image après l'autre (pas de file d'attente si l'écran est lent).
+  let lastUrl = null;
+  async function frames() {
+    if (document.hidden) return setTimeout(frames, 500);
+    try {
+      const r = await fetch("/frame?t=" + Date.now());
+      if (r.ok) {
+        const url = URL.createObjectURL(await r.blob());
+        const img = $(".phone img");
+        await new Promise((ok) => { img.onload = ok; img.onerror = ok; img.src = url; });
+        if (lastUrl) URL.revokeObjectURL(lastUrl);
+        lastUrl = url;
+        if (img.naturalWidth && img.naturalWidth !== size.w) {
+          size = { w: img.naturalWidth, h: img.naturalHeight, scale: img.naturalWidth >= 1000 ? 3 : 2 };
+          $(".phone").style.setProperty("--ratio", `${size.w} / ${size.h}`);
+          for (const m of await api("/markers")) addMarker(m);
+        }
+      }
+    } catch {}
+    setTimeout(frames, 120);
+  }
+
+  async function refreshInfo() {
+    info = await api("/info").catch(() => info);
+    document.title = `${info.name || "App iOS"} — Simulateur iOS (app native)`;
+    $(".name").textContent = info.name || "App iOS";
+    $(".device").textContent = info.device?.name || "";
+    const b = $(".build"), st = info.build?.status;
+    b.className = "build " + (st || "");
+    b.textContent = { running: "Compilation…", ok: "Relancé", error: "Échec de la compilation" }[st] || "";
+    $("#rebuild").disabled = st === "running";
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    $("#rebuild").onclick = () => api("/rebuild", {}).then(refreshInfo);
+    $("#simulator").onclick = () => api("/simulator", {});
+    refreshInfo();
+    setInterval(refreshInfo, 2000);
+    frames();
+  });
+})();
+</script>
+</head>
+<body>
+  <header>
+    <span class="name"></span><span class="device"></span><span class="build"></span>
+    <button id="simulator" title="Naviguer dans l'app depuis la fenêtre Simulator">Simulator</button>
+    <button id="rebuild">Recompiler</button>
+  </header>
+  <main>
+    <div class="phone"><img alt="Écran du simulateur" /><div class="layer"><div class="tap probe"></div></div></div>
+  </main>
+</body>
+</html>
