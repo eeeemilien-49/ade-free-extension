@@ -1,0 +1,67 @@
+<!doctype html>
+<!-- Page de test du calque (extension/comment.js) avec un faux chrome.* : aucun bridge requis.
+     Servir la racine du dépôt : python3 -m http.server 7841 → http://127.0.0.1:7841/scripts/calque-demo/
+     ?aggressive : styles de page agressifs · ?sim=0 : pas de progression simulée · ?open=<n> : ouvre le fil n. -->
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Atelier — démo du calque</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #fbfaf7; --fg: #1d1b16; --muted: #6d675c; --line: #e7e2d8; --card: #fff; --accent: #2f5d50; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #15140f; --fg: #eeeae0; --muted: #a39d90; --line: #2e2b24; --card: #1e1c17; --accent: #8cc4b2; } }
+    body { margin: 0; font: 16px/1.6 Georgia, serif; background: var(--bg); color: var(--fg); }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 18px 40px; border-bottom: 1px solid var(--line); }
+    header .logo { font-weight: 700; letter-spacing: .04em; }
+    header nav { display: flex; gap: 24px; align-items: center; }
+    header nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
+    header nav a.cta { color: var(--fg); border: 1px solid var(--fg); padding: 6px 12px; border-radius: 999px; }
+    .hero { padding: 80px 40px 40px; max-width: 760px; }
+    .hero h1 { font-size: 52px; line-height: 1.1; margin: 0 0 16px; }
+    .hero p { color: var(--muted); font-size: 19px; margin: 0 0 28px; }
+    .hero button { font: inherit; background: var(--accent); color: var(--bg); border: 0; padding: 12px 20px; border-radius: 6px; }
+    .pricing { padding: 40px; }
+    .pricing h2 { font-size: 34px; margin: 0 0 20px; }
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+    .card h3 { margin: 0 0 6px; } .card .price { font-size: 30px; font-weight: 700; }
+    .card ul { padding-left: 18px; color: var(--muted); } .card button { font: inherit; width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+    footer { margin-top: 60px; padding: 30px 40px; border-top: 1px solid var(--line); display: flex; gap: 18px; font-size: 14px; }
+    footer a { color: var(--muted); }
+    .tall { height: 600px; }
+  </style>
+  <style id="aggressive" media="not all">
+    /* Styles hostiles : héritage forcé, resets brutaux. */
+    * { font-family: "Comic Sans MS", cursive !important; color: #c00 !important; line-height: 3 !important;
+        text-transform: uppercase !important; letter-spacing: .2em !important; font-style: italic !important;
+        text-align: center !important; cursor: wait !important; visibility: visible !important; text-shadow: 1px 1px #ff0 !important; }
+    html { font-size: 22px !important; }
+    claude-comments, body > * { transform: scale(1) !important; opacity: .95 !important; filter: none !important; }
+    button, textarea, input { all: unset !important; }
+    svg { width: 80px !important; height: 80px !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">ATELIER</div>
+    <nav><a href="#">Produits</a><a href="#">Journal</a><a href="#">Tarifs</a><a class="cta" href="#">Essayer</a></nav>
+  </header>
+  <section class="hero">
+    <h1>Des outils de céramique pensés pour durer toute une vie</h1>
+    <p>Tours, estèques et émaux sélectionnés par des potiers, livrés partout en France en 48 h.</p>
+    <button>Découvrir la collection</button>
+  </section>
+  <section class="pricing">
+    <h2>Abonnements atelier</h2>
+    <div class="cards">
+      <div class="card"><h3>Découverte</h3><div class="price">12 €</div><ul><li>2 kg de terre / mois</li><li>Accès aux tutoriels</li></ul><button>Choisir</button></div>
+      <div class="card"><h3>Passion</h3><div class="price">29 €</div><ul><li>6 kg de terre / mois</li><li>Émaux inclus</li></ul><button>Choisir</button></div>
+      <div class="card"><h3>Pro</h3><div class="price">59 €</div><ul><li>Terre à volonté</li><li>Cuisson partagée</li></ul><button>Choisir</button></div>
+    </div>
+  </section>
+  <div class="tall"></div>
+  <footer><a href="#">Mentions</a><a href="#">Contact</a><a href="#">CGV</a><a href="#">Presse</a></footer>
+  <script src="mock.js"></script>
+  <script src="../../extension/comment.js"></script>
+</body>
+</html>
