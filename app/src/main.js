@@ -3,7 +3,7 @@
 // (extension/sidepanel.html) + preview du projet (WebContentsView où l'on injecte extension/comment.js).
 // L'app lance le bridge et installe l'hôte natif : l'extension Chrome s'appaire toute seule
 // et voit les mêmes commentaires que la preview.
-const { app, BaseWindow, WebContentsView, Menu, dialog, ipcMain, shell: electronShell } = require("electron");
+const { app, BaseWindow, WebContentsView, Menu, dialog, ipcMain, nativeTheme, shell: electronShell } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { execFileSync, execFile } = require("node:child_process");
@@ -15,7 +15,7 @@ const { installNativeHost, writeAppInfo, extensionSeen } = require("./native-ins
 const ROOT = path.join(__dirname, "..", "..");
 const EXT = path.join(ROOT, "extension");
 const PORT = Number(process.env.CLAUDE_BRIDGE_PORT || 7823);
-const TOP = 44, SIDE = 320;
+const TOP = 44, SIDE = 300;
 const PROTOCOL = "claude-bridge";
 
 app.setName("Claude Code Bridge");
@@ -31,7 +31,8 @@ try {
 let win, shellView, sidebarView, pageView, host, bridge;
 let devServer = null;
 // view : "page" (preview) | "logs" (journaux du serveur) | "install" (guide de l'extension)
-const state = { project: null, recents: [], server: { status: "idle" }, page: {}, view: "page", bridge: {}, extension: null, chrome: null };
+const state = { project: null, recents: [], server: { status: "idle" }, page: {}, view: "page", bridge: {}, extension: null, chrome: null, sidebar: true, theme: "system" };
+let pageError = null; // dernier échec de chargement de la page principale (null si la page s'est chargée)
 
 // ---------- projets récents ----------
 const projectsFile = () => path.join(app.getPath("userData"), "projects.json");
@@ -43,6 +44,36 @@ function saveRecents() {
   fs.writeFileSync(projectsFile(), JSON.stringify({ recents: state.recents }, null, 2));
 }
 
+// ---------- préférences d'affichage (panneau, apparence) ----------
+const prefsFile = () => path.join(app.getPath("userData"), "prefs.json");
+function loadPrefs() {
+  try { Object.assign(state, pick(JSON.parse(fs.readFileSync(prefsFile(), "utf8")))); } catch {}
+  nativeTheme.themeSource = state.theme;
+}
+const pick = ({ sidebar, theme }) => ({ ...(typeof sidebar === "boolean" && { sidebar }), ...(["system", "light", "dark"].includes(theme) && { theme }) });
+function savePrefs() {
+  try { fs.writeFileSync(prefsFile(), JSON.stringify(pick(state), null, 2)); } catch {}
+}
+function setSidebar(on) {
+  state.sidebar = on;
+  savePrefs();
+  buildMenu();
+  pushState();
+}
+function setTheme(theme) {
+  state.theme = theme;
+  nativeTheme.themeSource = theme;
+  savePrefs();
+  buildMenu();
+  pushState();
+}
+// Commandes envoyées au panneau (extension/sidepanel.js écoute « panel:command »).
+function panelCommand(cmd) {
+  if (!state.sidebar) setSidebar(true);
+  sidebarView.webContents.focus();
+  sidebarView.webContents.executeJavaScript(`document.dispatchEvent(new CustomEvent("panel:command", { detail: ${JSON.stringify(cmd)} }))`).catch(() => {});
+}
+
 // ---------- état → coquille ----------
 function pushState() {
   if (!shellView || shellView.webContents.isDestroyed()) return;
@@ -51,6 +82,7 @@ function pushState() {
   state.page = {
     url: url === "about:blank" ? "" : url, title: wc.getTitle(), loading: wc.isLoading(),
     canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(),
+    error: pageError,
   };
   shellView.webContents.send("app:state", state);
   layout();
@@ -59,17 +91,26 @@ function pushState() {
 function layout() {
   if (!win) return;
   const { width, height } = win.getContentBounds();
+  const side = state.sidebar ? SIDE : 0;
   shellView.setBounds({ x: 0, y: 0, width, height });
+  sidebarView.setVisible(state.sidebar);
   sidebarView.setBounds({ x: 0, y: TOP, width: SIDE, height: height - TOP });
-  pageView.setBounds({ x: SIDE, y: TOP, width: width - SIDE, height: height - TOP });
-  pageView.setVisible(!!state.page.url && state.view === "page");
+  pageView.setBounds({ x: side, y: TOP, width: width - side, height: height - TOP });
+  pageView.setVisible(!!state.page.url && !state.page.error && state.view === "page");
 }
 function setView(v) { state.view = v; pushState(); }
+function reloadPage(ignoreCache) {
+  if (pageError) return navigate(pageError.url);
+  const wc = pageView.webContents;
+  ignoreCache === true ? wc.reloadIgnoringCache() : wc.reload();
+}
 
 function navigate(url) {
-  if (!/^[a-z]+:/i.test(url)) url = (/^(localhost|127\.|\[::1\])/.test(url) ? "http://" : "https://") + url;
+  // « localhost:3000 » n'est pas un schéma : on n'accepte tel quel que « xxx:// ».
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) url = (/^(localhost|127\.|\[::1\])/.test(url) ? "http://" : "https://") + url;
   if (!/^https?:/.test(url)) return;
   state.view = "page";
+  pageError = null;
   pageView.webContents.loadURL(url).catch(() => {});
   layout();
 }
@@ -108,6 +149,7 @@ async function openProject(dir) {
   if (!fs.existsSync(dir)) return;
   closeProject();
   state.project = { dir, name: path.basename(dir) };
+  buildMenu();
   state.recents = [dir, ...state.recents.filter((d) => d !== dir)].slice(0, 12);
   saveRecents();
   app.addRecentDocument?.(dir);
@@ -115,6 +157,8 @@ async function openProject(dir) {
   devServer.on("change", (s) => {
     const wasRunning = state.server.status === "running";
     state.server = { ...s, logs: s.logs.slice(-200) };
+    // Le serveur s'arrête alors que la page était affichée : on montre pourquoi plutôt qu'une page morte.
+    if (wasRunning && (s.status === "error" || s.status === "stopped") && state.view === "page") state.view = "logs";
     if (s.status === "running" && !wasRunning && s.url) {
       // Le dossier du projet pour cette origine : les commentaires de la page iront dans ce projet.
       const origin = new URL(s.url).origin;
@@ -134,6 +178,7 @@ function closeProject() {
   devServer = null;
   state.project = null;
   state.server = { status: "idle" };
+  pageError = null;
   if (state.view === "logs") state.view = "page";
   if (pageView.webContents.getURL()) pageView.webContents.loadURL("about:blank").then(() => pageView.webContents.navigationHistory.clear());
 }
@@ -155,7 +200,7 @@ function projectMenu() {
       { label: "Redémarrer le serveur de dev", click: () => openProject(state.project.dir) },
       { label: state.view === "logs" ? "Revenir à la page" : "Journaux du serveur", click: () => setView(state.view === "logs" ? "page" : "logs") },
       { label: "Afficher dans le Finder", click: () => electronShell.openPath(state.project.dir) },
-      { label: "Fermer le projet", click: () => { closeProject(); pushState(); } },
+      { label: "Fermer le projet", click: () => { closeProject(); buildMenu(); pushState(); } },
     ] : []),
     ...(state.recents.length ? [{ type: "separator" }, { label: "Vider les récents", click: () => { state.recents = state.project ? [state.project.dir] : []; saveRecents(); pushState(); } }] : []),
   ]);
@@ -169,7 +214,10 @@ const actions = {
   navigate: (url) => navigate(String(url || "").trim()),
   back: () => pageView.webContents.navigationHistory.goBack(),
   forward: () => pageView.webContents.navigationHistory.goForward(),
-  reload: () => pageView.webContents.reload(),
+  reload: reloadPage,
+  toggleSidebar: () => setSidebar(!state.sidebar),
+  theme: (t) => ["system", "light", "dark"].includes(t) && setTheme(t),
+  focusPanel: () => panelCommand("focus"),
   restart: () => state.project && openProject(state.project.dir),
   toggleLogs: () => setView(state.view === "logs" ? "page" : "logs"),
   openInChrome: () => openInChrome(state.page.url || state.server.url),
@@ -182,20 +230,39 @@ const actions = {
 
 function buildMenu() {
   const page = () => pageView.webContents;
+  const theme = (label, value) => ({ label, type: "radio", checked: state.theme === value, click: () => setTheme(value) });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { role: "appMenu" },
+    { label: app.name, submenu: [
+      { role: "about", label: `À propos de ${app.name}` },
+      { type: "separator" },
+      { label: "Réglages…", accelerator: "CmdOrCtrl+,", click: () => panelCommand("settings") },
+      { type: "separator" },
+      { role: "services", label: "Services" },
+      { type: "separator" },
+      { role: "hide", label: `Masquer ${app.name}` }, { role: "hideOthers", label: "Masquer les autres" }, { role: "unhide", label: "Tout afficher" },
+      { type: "separator" },
+      { role: "quit", label: `Quitter ${app.name}` },
+    ] },
     { label: "Fichier", submenu: [
       { label: "Ouvrir un projet…", accelerator: "CmdOrCtrl+O", click: pickProject },
       { label: "Ouvrir l'adresse", accelerator: "CmdOrCtrl+L", click: () => { shellView.webContents.focus(); shellView.webContents.send("app:focus-address"); } },
       { label: "Ouvrir dans Chrome", accelerator: "CmdOrCtrl+Shift+O", click: actions.openInChrome },
       { type: "separator" },
+      { label: "Redémarrer le serveur de dev", enabled: !!state.project, click: actions.restart },
+      { label: "Journaux du serveur", accelerator: "Alt+CmdOrCtrl+L", enabled: !!state.project, click: actions.toggleLogs },
+      { type: "separator" },
       { label: "Installer l'extension Chrome…", click: () => setView("install") },
-      { type: "separator" }, { role: "close" },
+      { type: "separator" }, { role: "close", label: "Fermer la fenêtre" },
     ] },
-    { role: "editMenu" },
+    { role: "editMenu", label: "Édition" },
     { label: "Présentation", submenu: [
-      { label: "Recharger la page", accelerator: "CmdOrCtrl+R", click: () => page().reload() },
-      { label: "Recharger sans cache", accelerator: "CmdOrCtrl+Shift+R", click: () => page().reloadIgnoringCache() },
+      { label: "Panneau", type: "checkbox", checked: state.sidebar, accelerator: "CmdOrCtrl+\\", click: actions.toggleSidebar },
+      { label: "Commentaires", accelerator: "CmdOrCtrl+1", click: () => panelCommand("comments") },
+      { label: "Historique", accelerator: "CmdOrCtrl+Y", click: () => panelCommand("history") },
+      { label: "Demander à Claude", accelerator: "CmdOrCtrl+K", click: () => panelCommand("prompt") },
+      { type: "separator" },
+      { label: "Recharger la page", accelerator: "CmdOrCtrl+R", click: () => reloadPage() },
+      { label: "Recharger sans cache", accelerator: "CmdOrCtrl+Shift+R", click: () => reloadPage(true) },
       { label: "Précédent", accelerator: "CmdOrCtrl+[", click: () => page().navigationHistory.goBack() },
       { label: "Suivant", accelerator: "CmdOrCtrl+]", click: () => page().navigationHistory.goForward() },
       { type: "separator" },
@@ -203,12 +270,16 @@ function buildMenu() {
       { label: "Zoom arrière", accelerator: "CmdOrCtrl+-", click: () => page().setZoomLevel(page().getZoomLevel() - 0.5) },
       { label: "Taille réelle", accelerator: "CmdOrCtrl+0", click: () => page().setZoomLevel(0) },
       { type: "separator" },
-      { label: "Recharger le panneau", click: () => sidebarView.webContents.reload() },
-      { label: "Outils de développement (page)", accelerator: "Alt+CmdOrCtrl+I", click: () => page().toggleDevTools() },
-      { label: "Outils de développement (panneau)", accelerator: "Alt+CmdOrCtrl+J", click: () => sidebarView.webContents.toggleDevTools() },
-      { label: "Outils de développement (coquille)", click: () => shellView.webContents.toggleDevTools() },
+      { label: "Apparence", submenu: [theme("Système", "system"), theme("Clair", "light"), theme("Sombre", "dark")] },
+      { type: "separator" },
+      { label: "Développement", submenu: [
+        { label: "Recharger le panneau", click: () => sidebarView.webContents.reload() },
+        { label: "Outils de développement (page)", accelerator: "Alt+CmdOrCtrl+I", click: () => page().toggleDevTools() },
+        { label: "Outils de développement (panneau)", accelerator: "Alt+CmdOrCtrl+J", click: () => sidebarView.webContents.toggleDevTools() },
+        { label: "Outils de développement (coquille)", click: () => shellView.webContents.toggleDevTools() },
+      ] },
     ] },
-    { role: "windowMenu" },
+    { role: "windowMenu", label: "Fenêtre" },
   ]));
 }
 
@@ -227,6 +298,7 @@ function handleLink(link) {
 async function main() {
   await app.whenReady();
   loadRecents();
+  loadPrefs();
   buildMenu();
   state.chrome = findChrome();
 
@@ -251,7 +323,7 @@ async function main() {
   win = new BaseWindow({
     width: 1440, height: 920, minWidth: 820, minHeight: 500,
     titleBarStyle: "hiddenInset", trafficLightPosition: { x: 14, y: 15 },
-    backgroundColor: "#ffffff", title: "Claude Code Bridge",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff", title: "Claude Code Bridge",
   });
 
   shellView = new WebContentsView({ webPreferences: { preload: path.join(__dirname, "preload-shell.js") } });
@@ -286,14 +358,19 @@ async function main() {
   pwc.on("did-finish-load", () => host.pageUpdated({ status: "complete" }));
   pwc.on("did-navigate-in-page", () => { host.pageUpdated({ status: "complete" }); pushState(); });
   pwc.on("did-fail-load", (_e, code, desc, url, isMain) => {
-    if (isMain && code !== -3) console.log(`[page] échec de chargement ${url} : ${desc}`);
+    if (!isMain || code === -3) return; // -3 : navigation interrompue par une autre
+    console.log(`[page] échec de chargement ${url} : ${desc}`);
+    pageError = { code, desc, url };
+    pushState();
   });
+  pwc.on("did-navigate", (_e, _url, status) => { if (status) pageError = null; });
   pwc.on("console-message", (e) => { if (e.level === "error" || /claude-bridge/.test(e.message)) console.log(`[page] ${e.message}`); });
   sidebarView.webContents.on("console-message", (e) => { if (e.level === "error") console.log(`[panneau] ${e.message}`); });
 
   shellView.webContents.loadFile(path.join(__dirname, "..", "renderer", "shell.html"));
   sidebarView.webContents.loadFile(path.join(EXT, "sidepanel.html"));
   win.on("resize", layout);
+  nativeTheme.on("updated", () => { win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff"); pushState(); });
   win.on("closed", () => app.quit());
   layout();
 

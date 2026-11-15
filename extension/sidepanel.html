@@ -7,9 +7,10 @@
 </head>
 <body>
   <header>
-    <button id="toggleHistory" class="btn-icon" title="Historique" aria-label="Historique" aria-expanded="false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
-    </button>
+    <nav class="tabs" role="tablist">
+      <button id="tabComments" class="tab" role="tab" aria-selected="true" title="Commentaires">Commentaires<span id="unreadCount" class="badge" hidden></span></button>
+      <button id="toggleHistory" class="tab" role="tab" aria-selected="false" aria-expanded="false" title="Historique">Historique</button>
+    </nav>
     <button id="toggleSettings" class="btn-icon" title="Réglages" aria-label="Réglages" aria-expanded="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
     </button>
@@ -17,10 +18,10 @@
 
   <section id="settings" hidden>
     <label>Dossier du projet pour <b id="origin">ce site</b><input id="cwd" placeholder="~/mon-projet" spellcheck="false" /></label>
-    <label>Mode de permission
+    <label>Permissions de Claude
       <select id="mode">
-        <option value="acceptEdits">acceptEdits — modifie les fichiers</option>
-        <option value="bypassPermissions">bypassPermissions — tout autorisé</option>
+        <option value="acceptEdits">Modifier les fichiers</option>
+        <option value="bypassPermissions">Tout autoriser (commandes comprises)</option>
       </select>
     </label>
     <button id="panelSide" class="link" hidden>Afficher le panneau à gauche ↗</button>
@@ -36,7 +37,7 @@
   <div id="empty" class="state empty" hidden>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
     <strong>Aucun commentaire</strong>
-    <span>⌘ + clic sur un élément, ou demande à Claude ci-dessous</span>
+    <span><kbd>⌘</kbd> + clic sur un élément de la page pour le commenter</span>
   </div>
 
   <section id="convView" hidden>
@@ -50,7 +51,7 @@
 
   <section id="histView" hidden>
     <div class="conv-head">
-      <button id="histBack" class="btn-icon" title="Retour" aria-label="Retour"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
       <input id="histQ" type="search" placeholder="Rechercher dans l'historique" spellcheck="false" aria-label="Rechercher dans l'historique" />
     </div>
     <div id="histBody" aria-live="polite"></div>
@@ -59,7 +60,7 @@
   <footer id="composer">
     <div class="prompt">
       <textarea id="prompt" rows="1" placeholder="Demander à Claude sur cette page…"></textarea>
-      <div class="bar"><span id="promptHint" class="hint"></span>
+      <div class="bar"><span id="promptHint" class="hint"></span><span id="enterHint" class="hint-kbd" hidden><kbd>↵</kbd> envoyer</span>
         <button id="send" class="send" aria-label="Envoyer" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
       </div>
     </div>

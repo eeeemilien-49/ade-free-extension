@@ -131,7 +131,7 @@ function createChromeHost({ storeFile, backgroundFile, bridgeUrl, getPairing, ge
   // L'URL du bridge est en dur dans background.js : on la redirige (port de test).
   const bridgeFetch = (url, opts) => fetch(String(url).replace("http://127.0.0.1:7823", bridgeUrl), opts);
   const ctx = vm.createContext({
-    chrome, console, fetch: bridgeFetch, URL, setTimeout, clearTimeout, setInterval, clearInterval,
+    chrome, console, fetch: bridgeFetch, URL, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval,
     btoa, atob, TextEncoder, TextDecoder, structuredClone,
   });
   vm.runInContext(fs.readFileSync(backgroundFile, "utf8"), ctx, { filename: backgroundFile });
