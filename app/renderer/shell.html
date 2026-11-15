@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>Claude Code Bridge</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="side">
+      <button id="project" class="project" title="Projets">
+        <span id="projectName">Aucun projet</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+    </div>
+    <div class="bar">
+      <span class="grow"></span>
+      <span id="injector" class="server" hidden><span class="dot"></span><span id="injectorText"></span></span>
+      <span id="server" class="server" hidden><span class="dot"></span><span id="serverText">—</span></span>
+      <button id="openChrome" class="btn" hidden title="La page se commente dans le navigateur (⌘ + clic)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        Ouvrir dans le navigateur
+      </button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div id="injectorError" class="banner" hidden></div>
+    <section id="welcome" class="welcome" hidden>
+      <h1>Ouvre un projet</h1>
+      <p>Son serveur de dev démarre. Dans Chrome, Arc ou Safari, ⌘ + clic sur un élément de n'importe
+        quelle page pour le commenter ; les commentaires apparaissent à gauche.</p>
+      <button id="pick" class="primary">Ouvrir un dossier…</button>
+      <ul id="recents" class="recents"></ul>
+    </section>
+    <section id="status" class="status" hidden>
+      <div class="status-head">
+        <span id="statusTitle"></span>
+        <span class="grow"></span>
+        <button id="retry" class="btn" hidden>Réessayer</button>
+      </div>
+      <p id="statusDetail" class="detail"></p>
+      <pre id="logs" class="logs"></pre>
+    </section>
+  </main>
+  <script src="shell.js"></script>
+</body>
+</html>
