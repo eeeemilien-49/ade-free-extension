@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { track, diffRoutes } from "./diffs.mjs";
+import { createHistory } from "./history.mjs";
 
 const PORT = Number(process.env.CLAUDE_BRIDGE_PORT || 7823);
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -415,6 +416,11 @@ const routes = {
 };
 
 Object.assign(routes, diffRoutes(() => comments, persist));
+// Historique (bridge/history.mjs) : « Résoudre » archive ; /history, /comment, /reopen.
+Object.assign(routes, createHistory({
+  dir: CONF_DIR, active: () => comments, stop: (id) => children.get(id)?.kill("SIGTERM"),
+  persist, view: publicView, nextN, reply: (b) => routes["POST /reply"](b),
+}).routes);
 
 const server = http.createServer(async (req, res) => {
   const origin = String(req.headers.origin || "");

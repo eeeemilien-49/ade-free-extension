@@ -106,6 +106,14 @@ const handlers = {
   },
   diff: ({ id }) => bridge("GET", "/diff?id=" + encodeURIComponent(id)),
   revert: ({ id }) => bridge("POST", "/revert", { id }),
+  // Historique : éléments résolus (archivés), détail complet, réouverture.
+  history({ q, cwd, url, offset, limit }) {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries({ q, cwd, url, offset, limit })) if (v != null && v !== "") p.set(k, v);
+    return bridge("GET", "/history?" + p);
+  },
+  comment: ({ id }) => bridge("GET", "/comment?id=" + encodeURIComponent(id)),
+  reopen: ({ id, text }) => bridge("POST", "/reopen", { id, text }),
   health: () => bridge("GET", "/health"),
   all: () => bridge("GET", "/all"),
   async seen({ id }) {
