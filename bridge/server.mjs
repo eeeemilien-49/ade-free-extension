@@ -9,6 +9,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { track, diffRoutes } from "./diffs.mjs";
 
 const PORT = Number(process.env.CLAUDE_BRIDGE_PORT || 7823);
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -48,8 +49,10 @@ function enqueue(c, prompt) {
   c.status = "queued";
   persist();
   // Les conversations ne modifient rien : leur propre file, en parallèle des modifications.
+  // Les sessions en lecture seule ne modifient rien : pas de diff à suivre.
   const key = readOnly(c) ? c.cwd + "#conversation" : c.cwd;
-  const next = (queues.get(key) || Promise.resolve()).then(() => run(c, prompt));
+  const job = readOnly(c) ? () => run(c, prompt) : () => track(c, () => run(c, prompt), persist);
+  const next = (queues.get(key) || Promise.resolve()).then(job);
   queues.set(key, next.catch(() => {}));
 }
 
@@ -410,6 +413,8 @@ const routes = {
     return [200, { ok: true }];
   },
 };
+
+Object.assign(routes, diffRoutes(() => comments, persist));
 
 const server = http.createServer(async (req, res) => {
   const origin = String(req.headers.origin || "");

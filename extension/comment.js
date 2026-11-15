@@ -23,6 +23,8 @@
     loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
     alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
     play: '<path d="M6 3.5v17a1 1 0 0 0 1.5.86l14-8.5a1 1 0 0 0 0-1.72l-14-8.5A1 1 0 0 0 6 3.5Z"/>',
+    diff: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M9 10h6M12 13V7M9 17h6"/>',
+    undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   };
   const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`;
 
@@ -172,6 +174,27 @@
       .row.error .row-trigger, .row.error .title b { color: var(--destructive); }
       .row pre { margin: 2px 0 6px 20px; max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
         background: var(--muted); color: var(--muted-foreground); border-radius: 6px; padding: 8px; font-size: 11px; }
+
+      /* Changements d'un commentaire (diff + annulation) */
+      .changes { display: flex; flex-direction: column; gap: 1px; margin-top: -4px; }
+      .changes .add { color: var(--success); } .changes .del { color: var(--destructive); } .changes .zero { color: var(--muted-foreground); }
+      .changes .count { flex: none; font-size: 11px; display: flex; gap: 4px; }
+      .changes .files { display: flex; flex-direction: column; gap: 1px; margin-left: 10px; padding-left: 10px; border-left: 1px solid var(--border); }
+      .changes .files .title { direction: rtl; text-align: left; }
+      .changes.reverted .title, .changes.reverted .count { text-decoration: line-through; opacity: .7; }
+      pre.diff { margin: 2px 0 6px; max-height: 14rem; overflow: auto; white-space: pre; background: var(--muted); color: var(--foreground);
+        border-radius: 6px; padding: 6px 0; font-size: 11px; line-height: 1.45; }
+      pre.diff span { display: block; padding: 0 8px; min-width: max-content; font: inherit; }
+      pre.diff .dl-add { background: color-mix(in oklch, var(--success) 16%, transparent); }
+      pre.diff .dl-del { background: color-mix(in oklch, var(--destructive) 13%, transparent); }
+      pre.diff .dl-hunk { color: var(--muted-foreground); }
+      .btn-ghost { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; cursor: pointer;
+        color: var(--muted-foreground); font-size: 12px; padding: 3px 4px; border-radius: 6px; }
+      .btn-ghost:hover { background: var(--accent); color: var(--foreground); }
+      .btn-ghost.confirm, .btn-ghost.confirm:hover { color: var(--destructive); }
+      .btn-ghost:disabled { cursor: default; opacity: .6; }
+      .btn-ghost:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+      .changes .done-note { display: flex; align-items: center; gap: 6px; padding: 3px 4px; font-size: 12px; color: var(--muted-foreground); }
 
       /* Shimmer (texte qui scintille pendant le travail) */
       .shimmer { background: linear-gradient(110deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%);
@@ -543,6 +566,105 @@
     return row;
   }
 
+  // ---------- changements du commentaire (diff + annulation) ----------
+  const diffs = new Map();     // id -> { key, data } (key : fin de session, pour recharger après un nouveau run)
+  const diffOpen = new Set();  // commentaires dont la liste de fichiers est dépliée
+  const diffFile = new Map();  // id -> fichier dont le diff est affiché
+  let confirmRevert = null;    // id en attente de confirmation
+
+  function loadDiff(c) {
+    const key = String(c.finishedAt || "");
+    const cached = diffs.get(c.id);
+    if (cached && cached.key === key && !cached.loading && !cached.data?.pending) return cached.data;
+    if (cached?.loading) return cached.data;
+    diffs.set(c.id, { key, loading: true, data: cached?.data });
+    call("diff", { id: c.id }).then(
+      (data) => {
+        diffs.set(c.id, { key, data });
+        if (data?.pending) setTimeout(() => openId === c.id && renderThread(false), 1000);
+        else if (openId === c.id) renderThread(false);
+      },
+      () => diffs.set(c.id, { key, data: null }), // bridge sans diffs : on n'affiche rien
+    );
+    return cached?.data;
+  }
+
+  // Patch d'un seul fichier, lignes colorées.
+  function fileDiff(patch, file) {
+    const block = patch.split(/^(?=diff --git )/m).find((b) => b.split("\n")[0].endsWith(" b/" + file)) || "";
+    const lines = block.split("\n");
+    const start = lines.findIndex((l) => l.startsWith("@@") || l.startsWith("Binary") || l.startsWith("GIT binary"));
+    const pre = document.createElement("pre");
+    pre.className = "diff";
+    pre.innerHTML = (start < 0 ? ["(pas de contenu texte)"] : lines.slice(start)).filter((l, i, a) => l || i < a.length - 1).map((l) => {
+      const cls = l.startsWith("@@") ? "dl-hunk" : l.startsWith("+") ? "dl-add" : l.startsWith("-") ? "dl-del" : "";
+      return `<span class="${cls}">${esc(l) || " "}</span>`;
+    }).join("");
+    return pre;
+  }
+
+  const counts = (x) => `<span class="${x.add ? "add" : "zero"}">+${x.add}</span><span class="${x.del ? "del" : "zero"}">−${x.del}</span>`;
+
+  function changesBlock(c) {
+    const d = loadDiff(c);
+    if (!d?.enabled || !d.files?.length) return null;
+    const n = d.files.length;
+    const open = diffOpen.has(c.id);
+    const box = document.createElement("div");
+    box.className = "changes" + (d.reverted ? " reverted" : "");
+    box.innerHTML = `<button class="row-trigger collapsible" aria-expanded="${open}">${icon("diff")}
+        <span class="title">${n} fichier${n > 1 ? "s" : ""} modifié${n > 1 ? "s" : ""}</span>
+        <span class="count mono">${counts(d)}</span>${icon("chevron", "chev")}</button>`;
+    q(".row-trigger", box).onclick = () => { open ? diffOpen.delete(c.id) : diffOpen.add(c.id); renderThread(false); };
+    if (open) {
+      const files = document.createElement("div");
+      files.className = "files";
+      for (const f of d.files) {
+        const shown = diffFile.get(c.id) === f.path;
+        const row = document.createElement("button");
+        row.className = "row-trigger collapsible";
+        row.setAttribute("aria-expanded", shown);
+        row.title = f.path;
+        row.innerHTML = `<span class="title mono">‎${esc(f.path)}</span>
+          <span class="count mono">${f.binary ? "binaire" : counts(f)}</span>`;
+        row.onclick = () => { shown ? diffFile.delete(c.id) : diffFile.set(c.id, f.path); renderThread(false); };
+        files.appendChild(row);
+        if (shown) files.appendChild(fileDiff(d.patch || "", f.path));
+      }
+      box.appendChild(files);
+    }
+    if (d.reverted) {
+      const note = document.createElement("div");
+      note.className = "done-note";
+      note.innerHTML = `${icon("check")}<span>Annulé</span>`;
+      box.appendChild(note);
+    } else {
+      const confirming = confirmRevert === c.id;
+      const b = document.createElement("button");
+      b.className = "btn-ghost" + (confirming ? " confirm" : "");
+      b.innerHTML = `${icon("undo")}<span>${confirming ? "Confirmer l'annulation" : "Annuler ce changement"}</span>`;
+      b.onclick = async () => {
+        if (!confirming) {
+          confirmRevert = c.id;
+          renderThread(false);
+          clearTimeout(changesBlock.t);
+          changesBlock.t = setTimeout(() => { if (confirmRevert === c.id) { confirmRevert = null; renderThread(false); } }, 4000);
+          return;
+        }
+        confirmRevert = null;
+        b.disabled = true;
+        q("span", b).textContent = "Annulation…";
+        try {
+          const data = await call("revert", { id: c.id });
+          diffs.set(c.id, { key: String(c.finishedAt || ""), data });
+        } catch (e) { toast(e.message); }
+        renderThread(false);
+      };
+      box.appendChild(b);
+    }
+    return box;
+  }
+
   function renderThread(scrollDown) {
     const c = comments.find((x) => x.id === openId);
     if (!c) return closeThread();
@@ -587,6 +709,10 @@
         }
       }
       conv.appendChild(d);
+      if (idx === lastAssistant && (c.status === "done" || c.status === "error")) {
+        const ch = changesBlock(c);
+        if (ch) conv.appendChild(ch);
+      }
     });
     // État courant : en attente, ou réflexion quand aucun outil ne tourne.
     const last = messages[messages.length - 1];

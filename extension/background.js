@@ -104,6 +104,8 @@ const handlers = {
     if (tab && selectors) details = await chrome.tabs.sendMessage(tab.id, { type: "cc:describe", selectors }).catch(() => ({})) || {};
     return bridge("POST", "/launch", { id, parentId, mode, details });
   },
+  diff: ({ id }) => bridge("GET", "/diff?id=" + encodeURIComponent(id)),
+  revert: ({ id }) => bridge("POST", "/revert", { id }),
   health: () => bridge("GET", "/health"),
   all: () => bridge("GET", "/all"),
   async seen({ id }) {
