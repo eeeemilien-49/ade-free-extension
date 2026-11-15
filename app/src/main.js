@@ -303,7 +303,12 @@ async function main() {
   if (link) handleLink(link);
 }
 
-ipcMain.handle("app:do", (_e, action, arg) => actions[action]?.(arg));
+// Certaines actions renvoient des objets Electron (BrowserWindow, process…) que l'IPC ne sait pas
+// cloner : on ne renvoie au rendu que des données simples.
+ipcMain.handle("app:do", async (_e, action, arg) => {
+  const result = await actions[action]?.(arg);
+  try { return structuredClone(result); } catch { return undefined; }
+});
 app.on("open-url", (e, url) => { e.preventDefault(); if (win) handleLink(url); });
 app.on("second-instance", (_e, argv) => {
   const link = argv.find((a) => a.startsWith(PROTOCOL + ":"));
