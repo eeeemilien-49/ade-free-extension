@@ -33,9 +33,3 @@ Dans le panneau, écris une demande large pour la page affichée (« passe en re
 Une session en lecture seule reçoit l'URL, une capture et un instantané du DOM, répond, puis propose des
 commentaires ancrés sur des éléments (pastilles en pointillé). Lance-les (tous ou un par un) : chacun devient
 une session qui modifie le code. La conversation continue (« ajoute aussi… », « annule le 3 »).
-
-## App de bureau (optionnelle)
-
-`app/` (Electron) ajoute une preview intégrée et la gestion du serveur de dev :
-`cd app && npm install && npm start`. Elle réinstalle son propre hôte natif à chaque lancement ;
-relance `node install.mjs` pour revenir au mode sans app.
