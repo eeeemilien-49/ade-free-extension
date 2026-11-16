@@ -366,12 +366,12 @@
 
   // ---------- toasts ----------
   // toast(texte, code) pour une erreur ; toast(texte, { kind, action: { label, run }, duration }) sinon.
-  // code "noapp" : l'app est fermée, on propose de l'ouvrir.
+  // code "noapp" : le bridge ne répond pas, on propose de le démarrer.
   function toast(text, opts) {
     if (typeof opts !== "object" || !opts) opts = { code: opts };
     const kind = opts.kind || "error";
     let action = opts.action;
-    if (opts.code === "noapp") action = { label: "Ouvrir l'app", run: openApp };
+    if (opts.code === "noapp") action = { label: "Démarrer", run: openApp };
     const duration = opts.duration ?? (opts.code === "noapp" ? 10000 : kind === "error" ? 6000 : 4000);
     for (const old of toastsEl.children) if (old.dataset.text === text) old.remove();
     while (toastsEl.children.length >= 3) toastsEl.firstElementChild.remove();
@@ -404,7 +404,7 @@
     return t;
   }
   async function openApp(t) {
-    q("span", t).textContent = "Ouverture de l'app…";
+    q("span", t).textContent = "Démarrage…";
     try { await call("openApp"); poll(0); }
     catch (err) { toast(err.message, err.code === "noapp" ? undefined : err.code); }
   }

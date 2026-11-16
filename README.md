@@ -1,26 +1,41 @@
 # Claude Code Bridge
 
 ⌘+clic sur un élément d'une page → une session Claude Code locale modifie le code.
-Deux pièces : l'**app de bureau** (`app/`) et l'**extension Chrome** (`extension/`). Zéro configuration.
+
+## Installation (sans app)
+
+Prérequis : [Node](https://nodejs.org) et [Claude Code](https://docs.claude.com/claude-code) (commande `claude`), sur macOS ou Linux.
 
 ```bash
-cd app && npm install && npm start            # ou : npm start -- ~/mon-projet
+git clone https://github.com/eeeemilien-49/ade-free-extension
+cd ade-free-extension
+node install.mjs
 ```
 
-- L'app lance le bridge (`bridge/server.mjs`), le serveur de dev du projet, et affiche la page dans
-  sa **preview** : ⌘+clic, bulles, fils, diffs y marchent comme dans Chrome. « Ouvrir dans Chrome »
-  bascule sur le vrai navigateur ; les deux voient les mêmes commentaires.
-- **Extension** : bouton « Installer l'extension Chrome » de l'app (3 étapes, en attendant le
-  Chrome Web Store). Elle s'appaire seule via Native Messaging : l'app installe l'hôte
-  `com.claude.code_bridge` (Chrome, Arc, Brave, Edge… présents) et l'extension, d'ID fixe
-  `ihbpnieleoceojjdkdbcndheonfmljme` (clé `key` du manifeste), y récupère port et token.
-  App fermée : l'extension le dit et propose « Ouvrir l'app ».
+Puis dans Chrome (ou Arc, Brave, Edge…) : `chrome://extensions` → **Mode développeur** →
+**Charger l'extension non empaquetée** → dossier `extension/`.
 
-Les commentaires et les sessions vivent dans le bridge (`~/.claude-chrome-bridge/comments.json`) :
-fermer l'onglet n'interrompt rien. Le bridge n'écoute que sur 127.0.0.1 et exige le token.
+C'est tout : au premier ⌘+clic, l'extension démarre elle-même le bridge local en arrière-plan
+(rien à laisser ouvert). Ne déplace pas le dossier cloné ensuite, ou relance `node install.mjs`.
+Désinstaller : `node install.mjs --uninstall`.
+
+## Comment ça marche
+
+- `install.mjs` déclare au navigateur un **hôte natif** (`com.claude.code_bridge`, Native Messaging),
+  autorisé pour l'ID fixe de l'extension (`ihbpnieleoceojjdkdbcndheonfmljme`, clé `key` du manifeste).
+- Quand l'extension a besoin du bridge, le navigateur lance l'hôte (`bridge/native-host.mjs`) : il démarre
+  `bridge/server.mjs` s'il ne tourne pas, puis rend le port et le token.
+- Le bridge n'écoute que sur 127.0.0.1 et exige le token. Commentaires et sessions vivent dans
+  `~/.claude-chrome-bridge/` (journal : `bridge.log`) : fermer l'onglet n'interrompt rien.
 
 ## Conversations
 Dans le panneau, écris une demande large pour la page affichée (« passe en revue les espacements »).
 Une session en lecture seule reçoit l'URL, une capture et un instantané du DOM, répond, puis propose des
 commentaires ancrés sur des éléments (pastilles en pointillé). Lance-les (tous ou un par un) : chacun devient
 une session qui modifie le code. La conversation continue (« ajoute aussi… », « annule le 3 »).
+
+## App de bureau (optionnelle)
+
+`app/` (Electron) ajoute une preview intégrée et la gestion du serveur de dev :
+`cd app && npm install && npm start`. Elle réinstalle son propre hôte natif à chaque lancement ;
+relance `node install.mjs` pour revenir au mode sans app.

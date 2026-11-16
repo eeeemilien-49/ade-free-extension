@@ -1,7 +1,7 @@
 // Service worker : relaie la page vers le bridge local (la page elle-même ne
 // peut pas l'appeler) et fait la capture d'écran de l'élément commenté.
-// Appairage sans configuration : l'app installe un hôte natif ; l'extension lui demande
-// le port et le token du bridge (Native Messaging), et sait rouvrir l'app.
+// Appairage sans configuration : `node install.mjs` (ou l'app) installe un hôte natif ; l'extension
+// lui demande le port et le token du bridge (Native Messaging). L'hôte démarre le bridge au besoin.
 const NATIVE_HOST = "com.claude.code_bridge";
 
 // L'icône de l'extension ouvre le side panel.
@@ -13,14 +13,15 @@ async function config() {
 }
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
-const NO_APP = "L'app Claude Code Bridge n'est pas ouverte.";
+const NO_APP = "Le bridge local ne répond pas.";
+const NO_HOST = "Lance « node install.mjs » dans le dossier du projet (une seule fois), puis réessaie.";
 
 // Demande port et token à l'app via l'hôte natif.
 async function pair() {
   let r;
   try { r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { type: "hello" }); }
-  catch { throw failure("nohost", "Installe et ouvre l'app Claude Code Bridge."); }
-  if (!r?.ok) throw failure(r?.canOpen ? "noapp" : "nohost", r?.canOpen ? NO_APP : "Installe et ouvre l'app Claude Code Bridge.");
+  catch { throw failure("nohost", NO_HOST); }
+  if (!r?.ok) throw failure(r?.canOpen ? "noapp" : "nohost", r?.canOpen ? NO_APP : r?.error || NO_HOST);
   await chrome.storage.local.set({ token: r.token, port: r.port });
   return r;
 }
@@ -132,10 +133,10 @@ const handlers = {
   comment: ({ id }) => bridge("GET", "/comment?id=" + encodeURIComponent(id)),
   reopen: ({ id, text }) => bridge("POST", "/reopen", { id, text }),
   health: () => bridge("GET", "/health"),
-  // Rouvre l'app (hôte natif), puis attend que le bridge réponde.
+  // Démarre le bridge (ou rouvre l'app) via l'hôte natif, puis attend qu'il réponde.
   async openApp() {
     const r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { type: "open" }).catch(() => null);
-    if (!r?.ok) throw failure("nohost", r?.error || "Installe et ouvre l'app Claude Code Bridge.");
+    if (!r?.ok) throw failure("nohost", r?.error || NO_HOST);
     for (let i = 0; i < 40; i++) {
       try { return await pair(); } catch { await new Promise((ok) => setTimeout(ok, 500)); }
     }

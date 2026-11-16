@@ -94,7 +94,7 @@ function showError(msg, code) {
 $("retry").onclick = refresh;
 $("openApp").onclick = async () => {
   $("openApp").disabled = true;
-  $("errorText").textContent = "Ouverture de l'app…";
+  $("errorText").textContent = "Démarrage…";
   const r = await chrome.runtime.sendMessage({ type: "openApp" }).catch((e) => ({ error: e.message }));
   $("openApp").disabled = false;
   if (r?.error) showError(r.error, r.code); else refresh();
